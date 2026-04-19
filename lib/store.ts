@@ -1,14 +1,29 @@
 /**
- * Submission store — single JSON blob ("submissions.json") persisted via
- * Vercel Blob in production, or the local filesystem (data/submissions.json)
- * in development. All writes are serialized through an in-memory mutex so
- * two concurrent submissions can't corrupt the file.
+ * Submission store — one blob per submission, not one global blob.
  *
- * Ranking algorithm (the "optimized" one): after every mutation we re-sort
- * the whole array and renumber `rank` on scored items. Since every op reads
- * + writes the whole blob anyway, insertion-order tricks save no wall time;
- * the sort cost O(N log N) is dominated by network/file I/O. What matters is
- * that the comparator is well-defined with tiebreakers so ranks are stable.
+ * Why this matters: the previous design (single "submissions.json" blob)
+ * used a module-level in-memory mutex to serialize read-modify-write. That
+ * mutex only covers ONE serverless function instance. Under concurrent load
+ * (e.g. 60 teams POSTing in a burst at a hackathon), Vercel spins up many
+ * instances and the mutex is useless across them. Two instances read 0 items,
+ * each appends their team, each writes back — the second write overwrites
+ * the first. Guaranteed data loss at scale.
+ *
+ * Per-submission blobs fix this by making every write touch a DIFFERENT
+ * pathname. Two creates don't conflict. Two notes on DIFFERENT submissions
+ * don't conflict. Only two writes to the SAME submission (e.g. two mentors
+ * adding notes to the same team at the exact same moment) can still race,
+ * and at 60-team scale that's a non-event.
+ *
+ * Storage layout:
+ *   submissions/<id>.json          — one file per submission, full JSON body
+ *
+ * Rank is NOT stored. It's computed on every listSubmissions() call by
+ * sorting the fetched set with compareSubmissions and numbering scored
+ * items 1..N. That keeps writes O(1) regardless of N.
+ *
+ * Local dev (no BLOB_READ_WRITE_TOKEN) uses one file per submission under
+ * $TMPDIR/clawstand/submissions/, mirroring prod semantics.
  */
 import { promises as fs } from "fs";
 import path from "path";
@@ -25,7 +40,7 @@ export type SubmissionStatus = "pending" | "scored" | "failed";
 export type Note = {
   mentor: string;
   text: string;
-  at: string; // ISO timestamp
+  at: string;
 };
 
 export type Submission = {
@@ -43,101 +58,169 @@ export type Submission = {
   reasoning?: string;
   traceUrl?: string;
   plan?: any;
-  rank: number | null;
+  rank: number | null; // populated on list, null on single-item reads
   notes: Note[];
   createdAt: string;
   scoredAt?: string;
   error?: string;
 };
 
-type StoreShape = { submissions: Submission[] };
+// ---------- Storage backend selection ----------
 
-// ---------- Persistence (blob in prod, file in dev) ----------
+const BLOB_PREFIX = "submissions/";
+const LOCAL_DIR =
+  process.env.CLAWSTAND_DATA_DIR ||
+  path.join(os.tmpdir(), "clawstand", "submissions");
 
-/**
- * LOCAL_FILE lives OUTSIDE the Next.js project root by default. If it sat
- * inside the tree (e.g. ./data/submissions.json), Next's dev-mode file
- * watcher would fire on every write and thrash the dynamic-route module
- * cache, causing subsequent GET /api/submissions/[id] polls to fall through
- * to /_not-found (was observed in Iteration 4 smoke testing). Overridable
- * via CLAWSTAND_DATA_FILE for anyone who wants a stable repo-local path.
- */
-const LOCAL_FILE =
-  process.env.CLAWSTAND_DATA_FILE ||
-  path.join(os.tmpdir(), "clawstand", "submissions.json");
-const BLOB_KEY = "submissions.json";
-
-// Fall back to file-based storage when no blob token is configured. Keeps
-// local dev zero-config. On Vercel prod, BLOB_READ_WRITE_TOKEN is always
-// injected automatically once a Blob store is linked to the project.
 function useBlob(): boolean {
   return !!process.env.BLOB_READ_WRITE_TOKEN;
 }
 
-async function readRaw(): Promise<StoreShape> {
+function pathnameFor(id: string): string {
+  return `${BLOB_PREFIX}${id}.json`;
+}
+
+function localPathFor(id: string): string {
+  return path.join(LOCAL_DIR, `${id}.json`);
+}
+
+// ---------- Single-submission read/write ----------
+
+async function readOne(id: string): Promise<Submission | null> {
   if (useBlob()) {
-    // Dynamic import so the package isn't pulled into the local dev path.
     const { list } = await import("@vercel/blob");
-    const { blobs } = await list({ prefix: BLOB_KEY, limit: 1 });
-    if (blobs.length === 0) return { submissions: [] };
-    const res = await fetch(blobs[0].downloadUrl, { cache: "no-store" });
-    if (!res.ok) return { submissions: [] };
+    const { blobs } = await list({ prefix: pathnameFor(id), limit: 1 });
+    if (blobs.length === 0) return null;
+    // Append cache-buster as backup — any blob written before we set
+    // cacheControlMaxAge: 0 still has the 1-year CDN default.
+    const fresh = `${blobs[0].downloadUrl}${blobs[0].downloadUrl.includes("?") ? "&" : "?"}_=${Date.now()}`;
+    const res = await fetch(fresh, { cache: "no-store" });
+    if (!res.ok) return null;
     try {
-      return (await res.json()) as StoreShape;
+      return (await res.json()) as Submission;
     } catch {
-      return { submissions: [] };
+      return null;
     }
   }
 
   try {
-    const text = await fs.readFile(LOCAL_FILE, "utf-8");
-    return JSON.parse(text) as StoreShape;
+    const text = await fs.readFile(localPathFor(id), "utf-8");
+    return JSON.parse(text) as Submission;
   } catch (e: any) {
-    if (e?.code === "ENOENT") return { submissions: [] };
+    if (e?.code === "ENOENT") return null;
     throw e;
   }
 }
 
-async function writeRaw(data: StoreShape): Promise<void> {
-  const body = JSON.stringify(data, null, 2);
+async function writeOne(sub: Submission): Promise<void> {
+  const body = JSON.stringify(sub, null, 2);
+
   if (useBlob()) {
     const { put } = await import("@vercel/blob");
-    await put(BLOB_KEY, body, {
+    // cacheControlMaxAge: 0 disables the default 1-YEAR Vercel CDN cache.
+    // Without this, after saveScored/saveFailed updates a blob, subsequent
+    // polls will keep seeing the stale "pending" version until CDN revalidates
+    // — fatal for the polling UX. See:
+    // https://vercel.com/docs/storage/vercel-blob/using-blob-sdk#caching-at-the-cdn-level
+    await put(pathnameFor(sub.id), body, {
       access: "public",
       addRandomSuffix: false,
       allowOverwrite: true,
       contentType: "application/json",
+      cacheControlMaxAge: 0,
     });
     return;
   }
 
-  // Atomic file write: tmp then rename.
-  await fs.mkdir(path.dirname(LOCAL_FILE), { recursive: true });
-  const tmp = LOCAL_FILE + ".tmp";
+  await fs.mkdir(LOCAL_DIR, { recursive: true });
+  const file = localPathFor(sub.id);
+  const tmp = file + ".tmp";
   await fs.writeFile(tmp, body, "utf-8");
-  await fs.rename(tmp, LOCAL_FILE);
+  await fs.rename(tmp, file);
 }
 
-// ---------- Mutex (serializes all read-modify-write ops) ----------
+async function listAllRaw(): Promise<Submission[]> {
+  if (useBlob()) {
+    const { list } = await import("@vercel/blob");
+    // Blob list pagination: keep fetching pages until done. At 60-item scale
+    // a single call is enough (default limit is 1000) but be defensive.
+    const all: { downloadUrl: string }[] = [];
+    let cursor: string | undefined;
+    do {
+      const res = await list({ prefix: BLOB_PREFIX, cursor, limit: 1000 });
+      all.push(...res.blobs);
+      cursor = res.hasMore ? res.cursor : undefined;
+    } while (cursor);
 
-let lock: Promise<any> = Promise.resolve();
+    // Fetch all blob bodies in parallel, with cache-buster (same reason as readOne).
+    const ts = Date.now();
+    const results = await Promise.all(
+      all.map(async (b) => {
+        try {
+          const fresh = `${b.downloadUrl}${b.downloadUrl.includes("?") ? "&" : "?"}_=${ts}`;
+          const r = await fetch(fresh, { cache: "no-store" });
+          if (!r.ok) return null;
+          return (await r.json()) as Submission;
+        } catch {
+          return null;
+        }
+      })
+    );
+    return results.filter((s): s is Submission => !!s);
+  }
 
-function withLock<T>(fn: () => Promise<T>): Promise<T> {
-  const next = lock.then(fn, fn);
-  // Swallow errors in the chain so a failed op doesn't poison later ones.
-  lock = next.catch(() => {});
+  // Local dev: readdir + parallel readFile.
+  let files: string[] = [];
+  try {
+    files = (await fs.readdir(LOCAL_DIR)).filter(
+      (f) => f.endsWith(".json") && !f.endsWith(".tmp")
+    );
+  } catch (e: any) {
+    if (e?.code === "ENOENT") return [];
+    throw e;
+  }
+  const results = await Promise.all(
+    files.map(async (f) => {
+      try {
+        const text = await fs.readFile(path.join(LOCAL_DIR, f), "utf-8");
+        return JSON.parse(text) as Submission;
+      } catch {
+        return null;
+      }
+    })
+  );
+  return results.filter((s): s is Submission => !!s);
+}
+
+// ---------- Per-submission mutex (same-instance addNote serialization) ----------
+//
+// Two mentors writing notes to the SAME submission within the SAME function
+// instance would race without this. This map is per-instance; cross-instance
+// races still exist but require two mentors typing at the exact same moment
+// on the same team AND hitting different Vercel instances. Acceptable.
+
+const subLocks = new Map<string, Promise<any>>();
+
+function withSubLock<T>(id: string, fn: () => Promise<T>): Promise<T> {
+  const prev = subLocks.get(id) || Promise.resolve();
+  const next = prev.then(fn, fn);
+  subLocks.set(
+    id,
+    next.catch(() => {})
+  );
+  next.finally(() => {
+    if (subLocks.get(id) === next.catch(() => {})) subLocks.delete(id);
+  });
   return next;
 }
 
-// ---------- Ranking ----------
+// ---------- Ranking (computed on read) ----------
 
-/**
- * Comparator: scored items first (by total DESC, then root param DESC, then
- * createdAt ASC), then pending, then failed. Stable, total ordering.
- */
 function compareSubmissions(a: Submission, b: Submission): number {
-  const order = (s: SubmissionStatus) => (s === "scored" ? 0 : s === "pending" ? 1 : 2);
-  if (order(a.status) !== order(b.status)) return order(a.status) - order(b.status);
+  const order = (s: SubmissionStatus) =>
+    s === "scored" ? 0 : s === "pending" ? 1 : 2;
+  if (order(a.status) !== order(b.status))
+    return order(a.status) - order(b.status);
 
   if (a.status === "scored" && b.status === "scored") {
     const at = a.total ?? -1;
@@ -148,21 +231,16 @@ function compareSubmissions(a: Submission, b: Submission): number {
     const bRoot = levelNumber(b.scores?.realOutputShipping?.level);
     if (bRoot !== aRoot) return bRoot - aRoot;
   }
-
   return a.createdAt.localeCompare(b.createdAt);
 }
 
-/**
- * Sort + renumber ranks. Scored items get 1..N in comparator order; pending
- * and failed get rank = null.
- */
-function reRank(data: StoreShape): StoreShape {
-  data.submissions.sort(compareSubmissions);
+function assignRanks(subs: Submission[]): Submission[] {
+  subs.sort(compareSubmissions);
   let n = 1;
-  for (const s of data.submissions) {
+  for (const s of subs) {
     s.rank = s.status === "scored" ? n++ : null;
   }
-  return data;
+  return subs;
 }
 
 // ---------- Public API ----------
@@ -173,71 +251,96 @@ export async function createSubmission(input: {
   liveUrl: string;
   repoUrl: string | null;
 }): Promise<Submission> {
-  return withLock(async () => {
-    const data = await readRaw();
-    const sub: Submission = {
-      id: `sub_${crypto.randomBytes(6).toString("hex")}`,
-      teamName: input.teamName.trim(),
-      userName: input.userName.trim(),
-      liveUrl: input.liveUrl.trim(),
-      repoUrl: input.repoUrl ? input.repoUrl.trim() : null,
-      status: "pending",
-      rank: null,
-      notes: [],
-      createdAt: new Date().toISOString(),
-    };
-    data.submissions.push(sub);
-    reRank(data);
-    await writeRaw(data);
-    return sub;
-  });
+  const sub: Submission = {
+    id: `sub_${crypto.randomBytes(6).toString("hex")}`,
+    teamName: input.teamName.trim(),
+    userName: input.userName.trim(),
+    liveUrl: input.liveUrl.trim(),
+    repoUrl: input.repoUrl ? input.repoUrl.trim() : null,
+    status: "pending",
+    rank: null,
+    notes: [],
+    createdAt: new Date().toISOString(),
+  };
+  await writeOne(sub);
+  return sub;
 }
 
+/**
+ * Single-submission read. Used by the polling endpoint. Does NOT compute
+ * rank (rank is a leaderboard concept and would require fetching all
+ * submissions on every poll — a 60-items-per-2s multiplication we don't want).
+ */
 export async function getSubmission(id: string): Promise<Submission | null> {
-  const data = await readRaw();
-  return data.submissions.find((s) => s.id === id) || null;
+  const sub = await readOne(id);
+  if (!sub) return null;
+  sub.rank = null; // rank is always null on single-item reads
+  return sub;
 }
 
+/**
+ * Full list, sorted by rank. Used by /admin. Assigns ranks in-place.
+ */
 export async function listSubmissions(): Promise<Submission[]> {
-  const data = await readRaw();
-  // already sorted on write, but re-sort defensively in case of manual edits
-  return [...data.submissions].sort(compareSubmissions);
+  const subs = await listAllRaw();
+  return assignRanks(subs);
+}
+
+/**
+ * Public counts for queue-position UI on /submit. Cheap — 1 list call, no
+ * content fetches.
+ */
+export async function queueStats(): Promise<{
+  pending: number;
+  scored: number;
+  failed: number;
+  total: number;
+}> {
+  const subs = await listAllRaw();
+  let pending = 0,
+    scored = 0,
+    failed = 0;
+  for (const s of subs) {
+    if (s.status === "scored") scored++;
+    else if (s.status === "failed") failed++;
+    else pending++;
+  }
+  return { pending, scored, failed, total: subs.length };
 }
 
 export async function saveScored(
   id: string,
   patch: Partial<Submission>
 ): Promise<Submission | null> {
-  return withLock(async () => {
-    const data = await readRaw();
-    const idx = data.submissions.findIndex((s) => s.id === id);
-    if (idx === -1) return null;
-    data.submissions[idx] = {
-      ...data.submissions[idx],
+  return withSubLock(id, async () => {
+    const existing = await readOne(id);
+    if (!existing) return null;
+    const updated: Submission = {
+      ...existing,
       ...patch,
       status: "scored",
       scoredAt: new Date().toISOString(),
     };
-    reRank(data);
-    await writeRaw(data);
-    return data.submissions.find((s) => s.id === id) || null;
+    await writeOne(updated);
+    return updated;
   });
 }
 
-export async function saveFailed(id: string, error: string): Promise<Submission | null> {
-  return withLock(async () => {
-    const data = await readRaw();
-    const idx = data.submissions.findIndex((s) => s.id === id);
-    if (idx === -1) return null;
-    data.submissions[idx] = {
-      ...data.submissions[idx],
+export async function saveFailed(
+  id: string,
+  error: string
+): Promise<Submission | null> {
+  return withSubLock(id, async () => {
+    const existing = await readOne(id);
+    if (!existing) return null;
+    const updated: Submission = {
+      ...existing,
       status: "failed",
       error,
       scoredAt: new Date().toISOString(),
     };
-    reRank(data);
-    await writeRaw(data);
-    return data.submissions.find((s) => s.id === id) || null;
+    await writeOne(updated);
+    return updated;
   });
 }
 
@@ -246,16 +349,15 @@ export async function addNote(
   mentor: string,
   text: string
 ): Promise<Submission | null> {
-  return withLock(async () => {
-    const data = await readRaw();
-    const idx = data.submissions.findIndex((s) => s.id === id);
-    if (idx === -1) return null;
-    data.submissions[idx].notes.push({
+  return withSubLock(id, async () => {
+    const existing = await readOne(id);
+    if (!existing) return null;
+    existing.notes.push({
       mentor: mentor.trim() || "mentor",
       text: text.trim(),
       at: new Date().toISOString(),
     });
-    await writeRaw(data);
-    return data.submissions[idx];
+    await writeOne(existing);
+    return existing;
   });
 }

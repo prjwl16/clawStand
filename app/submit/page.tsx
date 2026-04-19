@@ -40,13 +40,18 @@ type Submission = {
 };
 
 const PHASES = [
-  "Submitting",
+  "Queued — waiting for a slot",
   "Planner deciding which agents to run",
   "Fetching the live product",
   "Product inspector reading the page",
   "Repo auditor querying GitHub",
   "Pitch writer composing the verdict",
 ];
+
+// Random stagger applied before firing the scoring call. Smooths a
+// burst of 60 simultaneous submissions into a ~15s stream so we don't
+// hammer Anthropic's RPM limit. Tuned for tier-2 (80k ITPM).
+const MAX_QUEUE_DELAY_MS = 15000;
 
 export default function SubmitPage() {
   const [teamName, setTeamName] = useState("");
@@ -59,9 +64,13 @@ export default function SubmitPage() {
   const [submission, setSubmission] = useState<Submission | null>(null);
   const [phase, setPhase] = useState(0);
   const [elapsed, setElapsed] = useState(0);
+  const [queueDelay, setQueueDelay] = useState(0); // planned stagger, seconds
+  const [queueWaited, setQueueWaited] = useState(0); // elapsed seconds of queue wait
 
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const phaseRef = useRef<ReturnType<typeof setTimeout>[]>([]);
+  const queueCountRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const runTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const startRef = useRef<number>(0);
 
   function cleanupTimers() {
@@ -69,6 +78,10 @@ export default function SubmitPage() {
     pollRef.current = null;
     phaseRef.current.forEach(clearTimeout);
     phaseRef.current = [];
+    if (queueCountRef.current) clearInterval(queueCountRef.current);
+    queueCountRef.current = null;
+    if (runTimeoutRef.current) clearTimeout(runTimeoutRef.current);
+    runTimeoutRef.current = null;
   }
 
   useEffect(() => () => cleanupTimers(), []);
@@ -92,14 +105,11 @@ export default function SubmitPage() {
     setBusy(true);
     setPhase(0);
 
-    // Simulated phase progression — matches the loading UX of the home page.
-    phaseRef.current = [
-      setTimeout(() => setPhase(1), 1500),
-      setTimeout(() => setPhase(2), 4000),
-      setTimeout(() => setPhase(3), 9000),
-      setTimeout(() => setPhase(4), 18000),
-      setTimeout(() => setPhase(5), 28000),
-    ];
+    // Roll a random queue delay up-front so the UI can show the expected wait.
+    const delayMs = Math.floor(Math.random() * MAX_QUEUE_DELAY_MS);
+    const delaySec = Math.ceil(delayMs / 1000);
+    setQueueDelay(delaySec);
+    setQueueWaited(0);
 
     let id: string;
     try {
@@ -128,29 +138,53 @@ export default function SubmitPage() {
       return;
     }
 
-    // Fire the run (fire-and-forget; we poll for status changes).
-    fetch(`/api/submissions/${id}/run`, { method: "POST" }).catch(() => {
-      /* poll will pick up a "failed" status if the server wrote one */
-    });
+    // Tick up the queue-wait counter once per second so the UI isn't static.
+    queueCountRef.current = setInterval(() => {
+      setQueueWaited((s) => s + 1);
+    }, 1000);
 
-    // Poll until the record is no longer pending.
-    pollRef.current = setInterval(async () => {
-      try {
-        const res = await fetch(`/api/submissions/${id}`, { cache: "no-store" });
-        if (!res.ok) return;
-        const sub: Submission = await res.json();
-        if (sub.status === "pending") return;
+    // After the queue delay, fire /run (fire-and-forget) and start phase
+    // progression + polling.
+    runTimeoutRef.current = setTimeout(() => {
+      if (queueCountRef.current) clearInterval(queueCountRef.current);
+      queueCountRef.current = null;
 
-        cleanupTimers();
-        setSubmission(sub);
-        setBusy(false);
-        if (sub.status === "failed") {
-          setError(sub.error || "Scoring failed.");
+      fetch(`/api/submissions/${id}/run`, { method: "POST" }).catch(() => {
+        /* poll will pick up a "failed" status if the server wrote one */
+      });
+
+      // Reset elapsed so the counter shows *scoring* time, not total.
+      startRef.current = Date.now();
+      setElapsed(0);
+
+      // Simulated phase progression — starts at phase 1 since queueing is phase 0.
+      setPhase(1);
+      phaseRef.current = [
+        setTimeout(() => setPhase(2), 3000),
+        setTimeout(() => setPhase(3), 8000),
+        setTimeout(() => setPhase(4), 17000),
+        setTimeout(() => setPhase(5), 27000),
+      ];
+
+      // Poll until the record is no longer pending.
+      pollRef.current = setInterval(async () => {
+        try {
+          const res = await fetch(`/api/submissions/${id}`, { cache: "no-store" });
+          if (!res.ok) return;
+          const sub: Submission = await res.json();
+          if (sub.status === "pending") return;
+
+          cleanupTimers();
+          setSubmission(sub);
+          setBusy(false);
+          if (sub.status === "failed") {
+            setError(sub.error || "Scoring failed.");
+          }
+        } catch {
+          /* swallow transient errors; keep polling */
         }
-      } catch {
-        /* swallow transient errors; keep polling */
-      }
-    }, 2000);
+      }, 2000);
+    }, delayMs);
   }
 
   const canSubmit =
@@ -250,7 +284,14 @@ export default function SubmitPage() {
         )}
 
         {/* Live progress ------------------------------------------ */}
-        {busy && <LoadingBar phase={phase} elapsed={elapsed} />}
+        {busy && (
+          <LoadingBar
+            phase={phase}
+            elapsed={elapsed}
+            queueDelay={queueDelay}
+            queueWaited={queueWaited}
+          />
+        )}
 
         {/* Error -------------------------------------------------- */}
         {error && !busy && (
@@ -316,6 +357,7 @@ function Header() {
           </span>
           <Link
             href="/admin"
+            prefetch={false}
             className="text-xs font-mono uppercase tracking-[0.18em] text-muted hover:text-acid"
           >
             Admin
@@ -326,25 +368,49 @@ function Header() {
   );
 }
 
-function LoadingBar({ phase, elapsed }: { phase: number; elapsed: number }) {
+function LoadingBar({
+  phase,
+  elapsed,
+  queueDelay,
+  queueWaited,
+}: {
+  phase: number;
+  elapsed: number;
+  queueDelay: number;
+  queueWaited: number;
+}) {
   const pct = ((phase + 0.4) / PHASES.length) * 100;
+  const queueing = phase === 0 && queueDelay > 0;
+  const remaining = Math.max(0, queueDelay - queueWaited);
+  const queuePct = queueDelay > 0 ? Math.min(100, (queueWaited / queueDelay) * 100) : 0;
+
   return (
     <div className="mt-8 rounded-md border border-line bg-surface p-5">
       <div className="flex items-center justify-between gap-4">
         <div className="flex items-center gap-3">
           <span className="inline-block h-1.5 w-1.5 rounded-full bg-acid animate-blink" />
-          <span className="text-sm text-fg">{PHASES[phase]}…</span>
+          <span className="text-sm text-fg">
+            {queueing ? `Queued · starting in ${remaining}s` : `${PHASES[phase]}…`}
+          </span>
         </div>
         <div className="text-xs font-mono text-muted tabular-nums">
-          {String(elapsed).padStart(2, "0")}s
+          {queueing
+            ? `wait ${String(queueWaited).padStart(2, "0")}s`
+            : `${String(elapsed).padStart(2, "0")}s`}
         </div>
       </div>
       <div className="mt-4 h-[2px] bg-line overflow-hidden">
         <div
           className="h-full bg-acid transition-all duration-700"
-          style={{ width: `${pct}%` }}
+          style={{ width: `${queueing ? queuePct : pct}%` }}
         />
       </div>
+      {queueing && (
+        <p className="mt-3 text-[11px] font-mono text-muted leading-relaxed">
+          Staggering a burst of simultaneous submissions so the agents
+          don&rsquo;t rate-limit. Normal — do not reload.
+        </p>
+      )}
     </div>
   );
 }
@@ -363,11 +429,9 @@ function ResultView({ data }: { data: Submission }) {
             {data.userName} · {data.liveUrl}
           </div>
         </div>
-        {data.rank != null && (
-          <div className="text-xs font-mono uppercase tracking-[0.18em] text-acid">
-            Rank #{data.rank}
-          </div>
-        )}
+        <div className="text-xs font-mono text-muted uppercase tracking-[0.18em]">
+          Ranks visible on the mentor leaderboard
+        </div>
       </div>
 
       {/* Verdict banner --------------------------------------- */}
