@@ -3,6 +3,9 @@ const {
   RUBRIC,
   planExecution,
   productInspector,
+  renderedInspector,
+  readmeInspector,
+  mergeProductScores,
   repoAuditor,
   pitchWriter,
 } = require('./lib/agents');
@@ -143,15 +146,40 @@ async function main() {
     for (const agent of plan.agents) {
       if (agent.name === 'productInspector') {
         if (agent.run) {
-          const span = trace.span({
-            name: 'productInspector',
-            input: { url, htmlLength: html.length, focusInstructions: agent.focusInstructions || '' },
+          // Product-side ensemble: plain HTML + Jina-rendered markdown +
+          // GitHub README, merged by max L per param. Fixes SPAs whose
+          // static HTML is just <div id="root">.
+          const htmlSpan = trace.span({
+            name: 'productInspector.html',
+            input: { url, htmlLength: html.length, focusInstructions: agent.focusInstructions || '', source: 'plain_html' },
             metadata: { model: MODEL, maxTokens: 1024 },
           });
-          tasks.push(productInspector(html, url, agent.focusInstructions).then(r => {
-            span.end({ output: r });
-            productScores = r;
-          }));
+          const renderedSpan = trace.span({
+            name: 'productInspector.rendered',
+            input: { url, focusInstructions: agent.focusInstructions || '', source: 'jina_reader' },
+            metadata: { model: MODEL, maxTokens: 1024 },
+          });
+          const readmeSpan = trace.span({
+            name: 'productInspector.readme',
+            input: { repo: repo || null, focusInstructions: agent.focusInstructions || '', source: 'github_readme' },
+            metadata: { model: MODEL, maxTokens: 1024 },
+          });
+          tasks.push((async () => {
+            const [htmlView, renderedView, readmeView] = await Promise.all([
+              productInspector(html, url, agent.focusInstructions)
+                .then(r => { htmlSpan.end({ output: r }); return { source: 'html', scores: r }; })
+                .catch(e => { htmlSpan.end({ output: { error: e && e.message } }); return { source: 'html', scores: null }; }),
+              renderedInspector(url, agent.focusInstructions)
+                .then(r => { renderedSpan.end({ output: r || { skipped: 'jina reader unavailable' } }); return { source: 'rendered', scores: r }; })
+                .catch(e => { renderedSpan.end({ output: { error: e && e.message } }); return { source: 'rendered', scores: null }; }),
+              repo
+                ? readmeInspector(repo, url, agent.focusInstructions)
+                    .then(r => { readmeSpan.end({ output: r || { skipped: 'README empty/404' } }); return { source: 'readme', scores: r }; })
+                    .catch(e => { readmeSpan.end({ output: { error: e && e.message } }); return { source: 'readme', scores: null }; })
+                : (async () => { readmeSpan.end({ output: { skipped: 'no repo provided' } }); return { source: 'readme', scores: null }; })(),
+            ]);
+            productScores = mergeProductScores([htmlView, renderedView, readmeView]);
+          })());
         } else {
           productScores = skippedScoresFor('productInspector', agent.skipReason || 'skipped by planner');
         }

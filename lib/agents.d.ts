@@ -67,6 +67,27 @@ export function productInspector(
   focusInstructions?: string
 ): Promise<Record<string, ScoreCell>>;
 
+export function renderedInspector(
+  url: string,
+  focusInstructions?: string
+): Promise<Record<string, ScoreCell> | null>;
+
+export function readmeInspector(
+  repoUrl: string | null | undefined,
+  productUrl: string,
+  focusInstructions?: string
+): Promise<Record<string, ScoreCell> | null>;
+
+export function fetchRenderedMarkdown(url: string): Promise<string | null>;
+
+export function fetchRepoReadme(
+  repoUrl: string | null | undefined
+): Promise<string | null>;
+
+export function mergeProductScores(
+  views: Array<{ source: string; scores: Record<string, ScoreCell> | null }>
+): Record<string, ScoreCell>;
+
 export function repoAuditor(
   repoUrl: string | null | undefined,
   focusInstructions?: string
