@@ -10,10 +10,18 @@ const { Langfuse } = require('langfuse');
 
 // Same client wiring as lib/langfuse.ts, duplicated here because the CLI
 // doesn't go through Next.js. If keys aren't set in .env, Langfuse silently no-ops.
+//
+// CLI landmine: flushAsync() returns a Promise that can resolve BEFORE all
+// span POSTs have hit the server. In a short-lived Node process that exits
+// the instant main() returns, the in-flight requests get killed and spans
+// never arrive — the trace appears in Langfuse with "No observations found".
+// Fix: flushAt:1 (no batching — every event POSTs immediately) + shutdownAsync()
+// at the end (waits for every pending request, not just a flush trigger).
 const langfuse = new Langfuse({
   publicKey: process.env.LANGFUSE_PUBLIC_KEY,
   secretKey: process.env.LANGFUSE_SECRET_KEY,
   baseUrl: process.env.LANGFUSE_BASE_URL || 'https://cloud.langfuse.com',
+  flushAt: 1,
 });
 
 const MODEL = 'claude-sonnet-4-5-20250929';
@@ -183,7 +191,10 @@ async function main() {
     trace.update({
       output: { total, maxTotal, verdict: pitch.verdict, planReasoning: plan.reasoning },
     });
-    await langfuse.flushAsync();
+    // shutdownAsync waits for every in-flight POST to complete before resolving.
+    // Must come AFTER the final trace.update and before console.log so the
+    // process doesn't exit mid-flight.
+    await langfuse.shutdownAsync();
 
     const result = {
       scores,
@@ -198,7 +209,7 @@ async function main() {
     console.log(JSON.stringify(result, null, 2));
   } catch (e) {
     trace.update({ output: { error: e && e.message ? e.message : String(e) } });
-    await langfuse.flushAsync().catch(() => {});
+    await langfuse.shutdownAsync().catch(() => {});
     console.error(e);
     process.exit(1);
   }
