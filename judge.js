@@ -1,5 +1,22 @@
 require('dotenv').config({ override: true });
-const { RUBRIC, productInspector, repoAuditor, pitchWriter } = require('./lib/agents');
+const {
+  RUBRIC,
+  planExecution,
+  productInspector,
+  repoAuditor,
+  pitchWriter,
+} = require('./lib/agents');
+const { Langfuse } = require('langfuse');
+
+// Same client wiring as lib/langfuse.ts, duplicated here because the CLI
+// doesn't go through Next.js. If keys aren't set in .env, Langfuse silently no-ops.
+const langfuse = new Langfuse({
+  publicKey: process.env.LANGFUSE_PUBLIC_KEY,
+  secretKey: process.env.LANGFUSE_SECRET_KEY,
+  baseUrl: process.env.LANGFUSE_BASE_URL || 'https://cloud.langfuse.com',
+});
+
+const MODEL = 'claude-sonnet-4-5-20250929';
 
 function getFlag(name) {
   const eqArg = process.argv.find(a => a.startsWith(`--${name}=`));
@@ -26,6 +43,30 @@ function computeTotal(scores) {
   return { total, maxTotal };
 }
 
+function looksLikeValidGithubUrl(u) {
+  if (!u) return false;
+  return /^https?:\/\/(www\.)?github\.com\/[^/\s]+\/[^/\s]+/i.test(u);
+}
+
+function skippedScoresFor(agentName, reason) {
+  if (agentName === 'productInspector') {
+    return {
+      realOutputShipping: { level: 'L1', evidence: `skipped: ${reason}` },
+      managementUIUsability: { level: 'L1', evidence: `skipped: ${reason}` },
+      costAndLatencyOnJudgeTask: { level: 'L1', evidence: `skipped: ${reason}` },
+    };
+  }
+  if (agentName === 'repoAuditor') {
+    return {
+      taskDecompositionQuality: { level: 'L1', evidence: `skipped: ${reason}` },
+      observability: { level: 'L1', evidence: `skipped: ${reason}` },
+      evaluationAndIterationTooling: { level: 'L1', evidence: `skipped: ${reason}` },
+      agentHandoffsAndMemory: { level: 'L1', evidence: `skipped: ${reason}` },
+    };
+  }
+  return {};
+}
+
 async function main() {
   const url = getFlag('url');
   const repo = getFlag('repo');
@@ -35,19 +76,114 @@ async function main() {
     process.exit(1);
   }
 
+  const trace = langfuse.trace({
+    name: 'clawstand-score',
+    input: { url, repo: repo || null },
+    metadata: { source: 'cli' },
+  });
+
   try {
+    // ---- 1. PLANNER ----
+    const plannerSpan = trace.span({
+      name: 'planner',
+      input: { url, repo: repo || null },
+      metadata: { model: MODEL, maxTokens: 512 },
+    });
+    const plan = await planExecution(url, repo || null);
+    plannerSpan.end({ output: plan });
+
+    // Defensive: enforce "both agents present, known invariants" even if
+    // the planner returned something off-spec.
+    plan.agents = (plan.agents || []).filter(
+      a => a && (a.name === 'productInspector' || a.name === 'repoAuditor')
+    );
+    if (!plan.agents.find(a => a.name === 'productInspector')) {
+      plan.agents.unshift({ name: 'productInspector', run: true, focusInstructions: '' });
+    }
+    if (!plan.agents.find(a => a.name === 'repoAuditor')) {
+      plan.agents.push({
+        name: 'repoAuditor',
+        run: !!(repo && looksLikeValidGithubUrl(repo)),
+        focusInstructions: '',
+        skipReason: !repo ? 'no repo provided' : undefined,
+      });
+    }
+    plan.agents = plan.agents.map(a => {
+      if (a.name === 'productInspector') return { ...a, run: true };
+      if (a.name === 'repoAuditor') {
+        if (!repo || !looksLikeValidGithubUrl(repo)) {
+          return {
+            ...a,
+            run: false,
+            skipReason: a.skipReason
+              || (!repo ? 'no repo provided' : "repo URL doesn't match github.com/owner/name"),
+          };
+        }
+      }
+      return a;
+    });
+
+    // ---- 2. Fetch HTML ----
     const res = await fetch(url);
     const html = await res.text();
 
-    const [productScores, repoScores] = await Promise.all([
-      productInspector(html, url),
-      repoAuditor(repo)
-    ]);
+    // ---- 3. Run planned specialists ----
+    const tasks = [];
+    let productScores = null;
+    let repoScores = null;
+
+    for (const agent of plan.agents) {
+      if (agent.name === 'productInspector') {
+        if (agent.run) {
+          const span = trace.span({
+            name: 'productInspector',
+            input: { url, htmlLength: html.length, focusInstructions: agent.focusInstructions || '' },
+            metadata: { model: MODEL, maxTokens: 1024 },
+          });
+          tasks.push(productInspector(html, url, agent.focusInstructions).then(r => {
+            span.end({ output: r });
+            productScores = r;
+          }));
+        } else {
+          productScores = skippedScoresFor('productInspector', agent.skipReason || 'skipped by planner');
+        }
+      }
+      if (agent.name === 'repoAuditor') {
+        if (agent.run) {
+          const span = trace.span({
+            name: 'repoAuditor',
+            input: { repo: repo || null, focusInstructions: agent.focusInstructions || '' },
+            metadata: { model: MODEL, maxTokens: 1024 },
+          });
+          tasks.push(repoAuditor(repo || null, agent.focusInstructions).then(r => {
+            span.end({ output: r });
+            repoScores = r;
+          }));
+        } else {
+          repoScores = skippedScoresFor('repoAuditor', agent.skipReason || 'skipped by planner');
+        }
+      }
+    }
+
+    await Promise.all(tasks);
 
     const scores = { ...productScores, ...repoScores };
     const { total, maxTotal } = computeTotal(scores);
 
+    // ---- 4. Pitch Writer (unchanged signature) ----
+    const pitchSpan = trace.span({
+      name: 'pitchWriter',
+      input: { scores, total, maxTotal },
+      metadata: { model: MODEL, maxTokens: 1536 },
+    });
     const pitch = await pitchWriter(scores, total, maxTotal);
+    pitchSpan.end({ output: pitch });
+
+    const traceUrl = trace.getTraceUrl();
+    trace.update({
+      output: { total, maxTotal, verdict: pitch.verdict, planReasoning: plan.reasoning },
+    });
+    await langfuse.flushAsync();
 
     const result = {
       scores,
@@ -55,11 +191,14 @@ async function main() {
       maxTotal,
       verdict: pitch.verdict,
       pitch: pitch.pitch,
-      reasoning: pitch.reasoning
+      reasoning: pitch.reasoning,
+      plan,
+      traceUrl,
     };
-
     console.log(JSON.stringify(result, null, 2));
   } catch (e) {
+    trace.update({ output: { error: e && e.message ? e.message : String(e) } });
+    await langfuse.flushAsync().catch(() => {});
     console.error(e);
     process.exit(1);
   }

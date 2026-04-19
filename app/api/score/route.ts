@@ -9,9 +9,7 @@ const {
   pitchWriter,
 } = require("@/lib/agents");
 
-// Run on the Node.js runtime (needed for @anthropic-ai/sdk + Buffer + GitHub REST).
 export const runtime = "nodejs";
-// LLM calls can be slow; four agents now instead of three.
 export const maxDuration = 60;
 
 function levelNumber(level: string | undefined): number {
@@ -20,7 +18,6 @@ function levelNumber(level: string | undefined): number {
   return n >= 1 && n <= 5 ? n : 1;
 }
 
-// Copied verbatim from judge.js:computeTotal to satisfy the "do not refactor" rule.
 function computeTotal(scores: Record<string, { level: string }>) {
   let total = 0;
   let maxTotal = 0;
@@ -32,15 +29,30 @@ function computeTotal(scores: Record<string, { level: string }>) {
   return { total, maxTotal };
 }
 
-// When the planner skips repoAuditor, we still owe the scorer L1 cells for
-// the four repo-scored rubric params.
-function skippedRepoScores(reason: string) {
-  return {
-    taskDecompositionQuality: { level: "L1", evidence: reason },
-    observability: { level: "L1", evidence: reason },
-    evaluationAndIterationTooling: { level: "L1", evidence: reason },
-    agentHandoffsAndMemory: { level: "L1", evidence: reason },
-  };
+// L1 fallbacks when the planner says run=false, per-agent.
+function skippedScoresFor(agentName: string, reason: string) {
+  if (agentName === "productInspector") {
+    return {
+      realOutputShipping: { level: "L1", evidence: `skipped: ${reason}` },
+      managementUIUsability: { level: "L1", evidence: `skipped: ${reason}` },
+      costAndLatencyOnJudgeTask: { level: "L1", evidence: `skipped: ${reason}` },
+    };
+  }
+  if (agentName === "repoAuditor") {
+    return {
+      taskDecompositionQuality: { level: "L1", evidence: `skipped: ${reason}` },
+      observability: { level: "L1", evidence: `skipped: ${reason}` },
+      evaluationAndIterationTooling: { level: "L1", evidence: `skipped: ${reason}` },
+      agentHandoffsAndMemory: { level: "L1", evidence: `skipped: ${reason}` },
+    };
+  }
+  return {};
+}
+
+// Defensive check: an https://github.com/<owner>/<name> shape.
+function looksLikeValidGithubUrl(u: string | null | undefined): boolean {
+  if (!u) return false;
+  return /^https?:\/\/(www\.)?github\.com\/[^/\s]+\/[^/\s]+/i.test(u);
 }
 
 export async function POST(req: NextRequest) {
@@ -59,34 +71,65 @@ export async function POST(req: NextRequest) {
 
     trace.update({ input: { url, repo: repo || null } });
 
-    // --- Parallel: PLANNER + HTML fetch --------------------------------
-    // The planner doesn't need the HTML; the fetch is pure I/O.
+    // ---- 1. PLANNER (span runs first, as a child of clawstand-score) ----
     const plannerSpan = trace.span({
       name: "planner",
       input: { url, repo: repo || null },
       metadata: { model: "claude-sonnet-4-5-20250929", maxTokens: 512 },
     });
-    const plannerPromise = planExecution(url, repo || null)
-      .then((p: any) => {
-        plannerSpan.end({ output: p });
-        return p;
-      })
-      .catch((e: any) => {
-        plannerSpan.end({ output: { error: e?.message } });
-        throw e;
-      });
-
-    const fetchPromise = (async () => {
-      const res = await fetch(url, { redirect: "follow" });
-      return await res.text();
-    })();
-
-    let html: string;
     let plan: any;
     try {
-      [plan, html] = await Promise.all([plannerPromise, fetchPromise]);
+      plan = await planExecution(url, repo || null);
+      plannerSpan.end({ output: plan });
     } catch (e: any) {
-      trace.update({ output: { error: `fetch-or-plan-failed: ${e?.message}` } });
+      plannerSpan.end({ output: { error: e?.message } });
+      throw e;
+    }
+
+    // Enforce invariants on the plan (defensive — never trust an LLM output blindly):
+    //   1. productInspector.run must be true
+    //   2. repoAuditor must be present; run is false iff no repo or invalid github URL
+    plan.agents = (plan.agents || []).filter(
+      (a: any) => a && (a.name === "productInspector" || a.name === "repoAuditor")
+    );
+    if (!plan.agents.find((a: any) => a.name === "productInspector")) {
+      plan.agents.unshift({
+        name: "productInspector",
+        run: true,
+        focusInstructions: "",
+      });
+    }
+    if (!plan.agents.find((a: any) => a.name === "repoAuditor")) {
+      plan.agents.push({
+        name: "repoAuditor",
+        run: !!(repo && looksLikeValidGithubUrl(repo)),
+        focusInstructions: "",
+        skipReason: !repo ? "no repo provided" : undefined,
+      });
+    }
+    plan.agents = plan.agents.map((a: any) => {
+      if (a.name === "productInspector") return { ...a, run: true };
+      if (a.name === "repoAuditor") {
+        if (!repo || !looksLikeValidGithubUrl(repo)) {
+          return {
+            ...a,
+            run: false,
+            skipReason:
+              a.skipReason ||
+              (!repo ? "no repo provided" : "repo URL doesn't match github.com/owner/name"),
+          };
+        }
+      }
+      return a;
+    });
+
+    // ---- 2. Fetch HTML (product inspector needs it) ----
+    let html = "";
+    try {
+      const res = await fetch(url, { redirect: "follow" });
+      html = await res.text();
+    } catch (e: any) {
+      trace.update({ output: { error: `Failed to fetch: ${e?.message}` } });
       await langfuse.flushAsync();
       return NextResponse.json(
         { error: `Failed to fetch live URL: ${e?.message || e}` },
@@ -94,86 +137,67 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Enforce the invariant: no repoAuditor without a repo, even if the
-    // LLM planner hallucinated one.
-    if (!repo) {
-      plan.agents = plan.agents.filter((a: any) => a.name !== "repoAuditor");
-      plan.skipReasons = plan.skipReasons || [];
-      if (!plan.skipReasons.find((s: any) => s.agent === "repoAuditor")) {
-        plan.skipReasons.push({
-          agent: "repoAuditor",
-          reason: "no repo provided",
-        });
+    // ---- 3. Run planned specialists in parallel ----
+    const tasks: Promise<any>[] = [];
+    let productScores: any = null;
+    let repoScores: any = null;
+
+    for (const agent of plan.agents) {
+      if (agent.name === "productInspector") {
+        if (agent.run) {
+          const span = trace.span({
+            name: "productInspector",
+            input: { url, htmlLength: html.length, focusInstructions: agent.focusInstructions || "" },
+            metadata: { model: "claude-sonnet-4-5-20250929", maxTokens: 1024 },
+          });
+          tasks.push(
+            productInspector(html, url, agent.focusInstructions).then((r: any) => {
+              span.end({ output: r });
+              productScores = r;
+            })
+          );
+        } else {
+          productScores = skippedScoresFor("productInspector", agent.skipReason || "skipped by planner");
+        }
+      }
+
+      if (agent.name === "repoAuditor") {
+        if (agent.run) {
+          const span = trace.span({
+            name: "repoAuditor",
+            input: { repo: repo || null, focusInstructions: agent.focusInstructions || "" },
+            metadata: { model: "claude-sonnet-4-5-20250929", maxTokens: 1024 },
+          });
+          tasks.push(
+            repoAuditor(repo || null, agent.focusInstructions).then((r: any) => {
+              span.end({ output: r });
+              repoScores = r;
+            })
+          );
+        } else {
+          repoScores = skippedScoresFor("repoAuditor", agent.skipReason || "skipped by planner");
+        }
       }
     }
 
-    const inspectorPlan = plan.agents.find((a: any) => a.name === "productInspector");
-    const auditorPlan = plan.agents.find((a: any) => a.name === "repoAuditor");
-
-    // --- Parallel: planned specialists ---------------------------------
-    const tasks: Promise<any>[] = [];
-
-    const inspectorSpan = trace.span({
-      name: "productInspector",
-      input: {
-        url,
-        htmlLength: html.length,
-        focusInstructions: inspectorPlan?.focusInstructions || "",
-      },
-      metadata: { model: "claude-sonnet-4-5-20250929", maxTokens: 1024 },
-    });
-    tasks.push(
-      productInspector(html, url, inspectorPlan?.focusInstructions).then((r: any) => {
-        inspectorSpan.end({ output: r });
-        return r;
-      })
-    );
-
-    let auditorRan = false;
-    if (auditorPlan) {
-      auditorRan = true;
-      const auditorSpan = trace.span({
-        name: "repoAuditor",
-        input: {
-          repo: repo || null,
-          focusInstructions: auditorPlan.focusInstructions,
-        },
-        metadata: { model: "claude-sonnet-4-5-20250929", maxTokens: 1024 },
-      });
-      tasks.push(
-        repoAuditor(repo || null, auditorPlan.focusInstructions).then((r: any) => {
-          auditorSpan.end({ output: r });
-          return r;
-        })
-      );
-    }
-
-    const results = await Promise.all(tasks);
-    const productScores = results[0];
-    const repoScores = auditorRan
-      ? results[1]
-      : skippedRepoScores(
-          plan.skipReasons?.find((s: any) => s.agent === "repoAuditor")?.reason
-            || "repoAuditor was skipped by the planner"
-        );
+    await Promise.all(tasks);
 
     const scores = { ...productScores, ...repoScores };
     const { total, maxTotal } = computeTotal(scores);
 
-    // --- Sequential: pitchWriter (unchanged) ---------------------------
+    // ---- 4. Pitch Writer (UNCHANGED signature; plan.reasoning only surfaces in trace/response) ----
     const pitchSpan = trace.span({
       name: "pitchWriter",
       input: { scores, total, maxTotal },
       metadata: { model: "claude-sonnet-4-5-20250929", maxTokens: 1536 },
     });
-
     const pitch = await pitchWriter(scores, total, maxTotal);
     pitchSpan.end({ output: pitch });
 
     const traceUrl = trace.getTraceUrl();
 
     trace.update({
-      output: { total, maxTotal, verdict: pitch.verdict, plan },
+      output: { total, maxTotal, verdict: pitch.verdict, planReasoning: plan.reasoning },
     });
     await langfuse.flushAsync();
 

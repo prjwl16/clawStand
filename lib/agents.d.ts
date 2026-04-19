@@ -16,12 +16,14 @@ export const RUBRIC: Record<string, RubricEntry>;
 
 export interface PlannedAgent {
   name: "productInspector" | "repoAuditor";
+  run: boolean;
   focusInstructions: string;
+  skipReason?: string;
 }
 
 export interface Plan {
+  reasoning: string;
   agents: PlannedAgent[];
-  skipReasons?: Array<{ agent: string; reason: string }>;
 }
 
 export function planExecution(
