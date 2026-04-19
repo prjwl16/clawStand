@@ -43,12 +43,16 @@ export type Note = {
   at: string;
 };
 
+export type TrackId = "maas" | "virality" | "revenue";
+
 export type Submission = {
   id: string;
   teamName: string;
   userName: string;
   liveUrl: string;
   repoUrl: string | null;
+  track?: TrackId; // defaults to "maas" when absent (legacy submissions)
+  stats?: any; // track-specific self-reported stats, opaque to the store
   status: SubmissionStatus;
   scores?: Record<string, ScoreCell>;
   total?: number;
@@ -250,13 +254,19 @@ export async function createSubmission(input: {
   userName: string;
   liveUrl: string;
   repoUrl: string | null;
+  track?: TrackId;
+  stats?: any;
 }): Promise<Submission> {
+  const track: TrackId =
+    input.track === "virality" || input.track === "revenue" ? input.track : "maas";
   const sub: Submission = {
     id: `sub_${crypto.randomBytes(6).toString("hex")}`,
     teamName: input.teamName.trim(),
     userName: input.userName.trim(),
     liveUrl: input.liveUrl.trim(),
     repoUrl: input.repoUrl ? input.repoUrl.trim() : null,
+    track,
+    stats: input.stats && typeof input.stats === "object" ? input.stats : undefined,
     status: "pending",
     rank: null,
     notes: [],

@@ -1,5 +1,19 @@
 "use client";
 
+/**
+ * Unified landing page — the SINGLE entry point for scoring a submission.
+ *
+ * Flow:
+ *   1. User fills form (track + URL + optional team/user/repo/stats)
+ *   2. POST /api/submissions → { id }
+ *   3. Fire POST /api/submissions/[id]/run (no await)
+ *   4. Poll GET /api/submissions/[id] every 2s until status !== "pending"
+ *   5. Render result inline
+ *
+ * Team name and Your name are OPTIONAL on this page (default to
+ * "Anonymous" / "—" server-side). A mentor running a quick judgement
+ * doesn't need to fill them. Teams submitting for the leaderboard do.
+ */
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { ArrowRight, ArrowUpRight } from "lucide-react";
@@ -15,24 +29,32 @@ import {
 
 type ScoreCell = { level: string; evidence: string };
 
-type ScoreResult = {
+type Submission = {
+  id?: string;
+  teamName?: string;
+  userName?: string;
+  liveUrl?: string;
+  repoUrl?: string | null;
+  track?: TrackId;
+  stats?: any;
+  status?: "pending" | "scored" | "failed";
   scores: Record<string, ScoreCell>;
   total: number;
   maxTotal: number;
   verdict: "NOMINATE" | "CUT";
   pitch: string;
-  reasoning: string;
-  inputs: { url: string; repo: string | null };
-  track?: TrackId;
+  reasoning?: string;
   traceUrl?: string;
+  error?: string;
+  rank?: number | null;
 };
 
 /**
  * Honest ClawStand self-score. Shown before any real run.
  * total = (3-1)*20 + (4-1)*5 + (2-1)*7 + (1-1)*5 + (2-1)*2 + (3-1)*1 + (3-1)*1 = 68
  */
-const SAMPLE: ScoreResult = {
-  track: "maas" as const,
+const SAMPLE: Submission = {
+  track: "maas",
   scores: {
     realOutputShipping: {
       level: "L3",
@@ -77,20 +99,25 @@ const SAMPLE: ScoreResult = {
     "I'd love to tell you ClawStand nominates itself. It doesn't. Here's the honest ledger: we ship a real product — L3 on the root parameter. Mentors paste a URL and get a verdict in thirty seconds at sub-ten-cent cost. Task decomposition is L4: three named specialists, typed contracts, each step testable on its own. But we fail the discipline bar. Zero evals. No regression tests on the prompts. Observability is console logs and nothing more. No Langfuse. No traces. No memory across runs. Sixty-eight out of one-sixty-four. Below the fifty-percent threshold. If ClawStand stood before ClawStand, it would say: build the eval harness, wire the tracing, come back next week. Cut.",
   reasoning:
     "ClawStand ships a working product (L3 root) and decomposes its pipeline cleanly (L4), but it lacks the discipline layer — evals, tracing, durable memory — that separates hackathon work from operational production. 68/164 falls below the 82 nominate threshold.",
-  inputs: {
-    url: "https://clawstand.vercel.app",
-    repo: "https://github.com/prjwl16/clawStand",
-  },
+  liveUrl: "https://clawstand.vercel.app",
+  repoUrl: "https://github.com/prjwl16/clawStand",
 };
 
 const PHASES = [
+  "Queued — waiting for a slot",
   "Fetching the live product",
-  "Product inspector reading the page",
-  "Repo auditor querying GitHub",
+  "Agents reading the submission",
+  "Scoring against the rubric",
   "Pitch writer composing the verdict",
 ];
 
+// Smaller stagger than /submit had — the unified page is the main demo
+// path, typical usage is ≤5 concurrent runs, not 60.
+const MAX_QUEUE_DELAY_MS = 3000;
+
 export default function Page() {
+  const [teamName, setTeamName] = useState("");
+  const [userName, setUserName] = useState("");
   const [url, setUrl] = useState("");
   const [repo, setRepo] = useState("");
   const [track, setTrack] = useState<TrackId>("maas");
@@ -103,32 +130,32 @@ export default function Page() {
     revenueUSD: "",
     waitlist: "",
   });
-  const [loading, setLoading] = useState(false);
-  const [result, setResult] = useState<ScoreResult | null>(null);
+
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<Submission | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [phase, setPhase] = useState(0);
   const [elapsed, setElapsed] = useState(0);
+
   const resultsRef = useRef<HTMLDivElement | null>(null);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const phaseTimers = useRef<ReturnType<typeof setTimeout>[]>([]);
+  const runTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const tickRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const startRef = useRef<number>(0);
 
-  useEffect(() => {
-    if (!loading) return;
-    setPhase(0);
-    setElapsed(0);
-    startRef.current = Date.now();
-    const timers = [
-      setTimeout(() => setPhase(1), 2500),
-      setTimeout(() => setPhase(2), 9000),
-      setTimeout(() => setPhase(3), 20000),
-    ];
-    const tick = setInterval(() => {
-      setElapsed(Math.floor((Date.now() - startRef.current) / 1000));
-    }, 250);
-    return () => {
-      timers.forEach(clearTimeout);
-      clearInterval(tick);
-    };
-  }, [loading]);
+  function cleanup() {
+    if (pollRef.current) clearInterval(pollRef.current);
+    pollRef.current = null;
+    phaseTimers.current.forEach(clearTimeout);
+    phaseTimers.current = [];
+    if (runTimeoutRef.current) clearTimeout(runTimeoutRef.current);
+    runTimeoutRef.current = null;
+    if (tickRef.current) clearInterval(tickRef.current);
+    tickRef.current = null;
+  }
+
+  useEffect(() => () => cleanup(), []);
 
   useEffect(() => {
     if (result && resultsRef.current) {
@@ -136,71 +163,116 @@ export default function Page() {
     }
   }, [result]);
 
+  function buildStatsPayload() {
+    if (track === "maas") return undefined;
+    if (track === "virality") {
+      return {
+        impressions: stats.impressions ? Number(stats.impressions) : undefined,
+        reactions: stats.reactions ? Number(stats.reactions) : undefined,
+        visitors: stats.visitors ? Number(stats.visitors) : undefined,
+        signups: stats.signups ? Number(stats.signups) : undefined,
+        amplification: stats.amplification || undefined,
+      };
+    }
+    return {
+      signups: stats.signups ? Number(stats.signups) : undefined,
+      revenueUSD: stats.revenueUSD ? Number(stats.revenueUSD) : undefined,
+      waitlist: stats.waitlist ? Number(stats.waitlist) : undefined,
+    };
+  }
+
   async function submit(e: React.FormEvent) {
     e.preventDefault();
-    if (!url.trim()) return;
-    setLoading(true);
+    if (busy || !url.trim()) return;
+
+    setBusy(true);
     setError(null);
     setResult(null);
+    setPhase(0);
+    setElapsed(0);
+    startRef.current = Date.now();
+
+    // Start the elapsed-seconds ticker.
+    tickRef.current = setInterval(() => {
+      setElapsed(Math.floor((Date.now() - startRef.current) / 1000));
+    }, 250);
+
+    // 1. Create submission record.
+    let id: string;
     try {
-      const res = await fetch("/api/score", {
+      const res = await fetch("/api/submissions", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          url: url.trim(),
-          repo: repo.trim() || undefined,
+          teamName: teamName.trim() || undefined,
+          userName: userName.trim() || undefined,
+          liveUrl: url.trim(),
+          repoUrl: repo.trim() || undefined,
           track,
-          stats:
-            track === "maas"
-              ? undefined
-              : {
-                  ...(track === "virality"
-                    ? {
-                        impressions: stats.impressions
-                          ? Number(stats.impressions)
-                          : undefined,
-                        reactions: stats.reactions
-                          ? Number(stats.reactions)
-                          : undefined,
-                        visitors: stats.visitors
-                          ? Number(stats.visitors)
-                          : undefined,
-                        signups: stats.signups
-                          ? Number(stats.signups)
-                          : undefined,
-                        amplification: stats.amplification || undefined,
-                      }
-                    : {}),
-                  ...(track === "revenue"
-                    ? {
-                        signups: stats.signups
-                          ? Number(stats.signups)
-                          : undefined,
-                        revenueUSD: stats.revenueUSD
-                          ? Number(stats.revenueUSD)
-                          : undefined,
-                        waitlist: stats.waitlist
-                          ? Number(stats.waitlist)
-                          : undefined,
-                      }
-                    : {}),
-                },
+          stats: buildStatsPayload(),
         }),
       });
       const data = await res.json();
       if (!res.ok) {
         setError(data?.error || `Request failed (${res.status})`);
-      } else {
-        setResult(data);
+        cleanup();
+        setBusy(false);
+        return;
       }
+      id = data.id;
     } catch (err: any) {
       setError(err?.message || "Network error");
-    } finally {
-      setLoading(false);
+      cleanup();
+      setBusy(false);
+      return;
     }
+
+    // 2. Short stagger so a burst of simultaneous runs doesn't hit Anthropic
+    //    RPM all at once. ≤3s max — small because this page is typically
+    //    one-at-a-time.
+    const delayMs = Math.floor(Math.random() * MAX_QUEUE_DELAY_MS);
+
+    runTimeoutRef.current = setTimeout(() => {
+      // 3. Fire-and-forget /run — the server writes status when done, we poll.
+      fetch(`/api/submissions/${id}/run`, { method: "POST" }).catch(() => {
+        /* poll will pick up failed status */
+      });
+
+      // Reset elapsed — queue time shouldn't count toward "scoring time".
+      startRef.current = Date.now();
+      setElapsed(0);
+      setPhase(1);
+      phaseTimers.current = [
+        setTimeout(() => setPhase(2), 4000),
+        setTimeout(() => setPhase(3), 14000),
+        setTimeout(() => setPhase(4), 26000),
+      ];
+
+      // 4. Poll until scored or failed.
+      pollRef.current = setInterval(async () => {
+        try {
+          const res = await fetch(`/api/submissions/${id}`, {
+            cache: "no-store",
+          });
+          if (!res.ok) return;
+          const sub: Submission = await res.json();
+          if (sub.status === "pending") return;
+
+          cleanup();
+          setBusy(false);
+          if (sub.status === "failed") {
+            setError(sub.error || "Scoring failed.");
+          } else {
+            setResult(sub);
+          }
+        } catch {
+          /* swallow transient errors; keep polling */
+        }
+      }, 2000);
+    }, delayMs);
   }
 
-  const showingSample = !result && !loading && !error;
+  const showingSample = !result && !busy && !error;
 
   return (
     <main className="min-h-screen">
@@ -232,7 +304,7 @@ export default function Page() {
                   <button
                     key={t}
                     type="button"
-                    disabled={loading}
+                    disabled={busy}
                     onClick={() => setTrack(t)}
                     className={
                       "flex-1 h-11 rounded-md border text-sm font-mono uppercase tracking-wider transition-colors " +
@@ -251,6 +323,37 @@ export default function Page() {
             </p>
           </div>
 
+          {/* Team + User (optional) ------------------------------- */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div className="space-y-2">
+              <label className="block text-sm font-medium text-fg">
+                Team name{" "}
+                <span className="text-muted font-normal">(optional)</span>
+              </label>
+              <Input
+                value={teamName}
+                disabled={busy}
+                onChange={(e) => setTeamName(e.target.value)}
+                placeholder="Agent Avengers"
+                maxLength={120}
+              />
+            </div>
+            <div className="space-y-2">
+              <label className="block text-sm font-medium text-fg">
+                Your name{" "}
+                <span className="text-muted font-normal">(optional)</span>
+              </label>
+              <Input
+                value={userName}
+                disabled={busy}
+                onChange={(e) => setUserName(e.target.value)}
+                placeholder="Ada Lovelace"
+                maxLength={120}
+              />
+            </div>
+          </div>
+
+          {/* Live URL --------------------------------------------- */}
           <div className="space-y-2">
             <label className="block text-sm font-medium text-fg">
               Live URL <span className="text-acid">*</span>
@@ -258,21 +361,24 @@ export default function Page() {
             <Input
               required
               autoFocus
+              type="url"
               value={url}
-              disabled={loading}
+              disabled={busy}
               onChange={(e) => setUrl(e.target.value)}
               placeholder="https://your-submission.vercel.app"
             />
           </div>
 
+          {/* Repo ------------------------------------------------- */}
           <div className="space-y-2">
             <label className="block text-sm font-medium text-fg">
               GitHub repo{" "}
               <span className="text-muted font-normal">(optional)</span>
             </label>
             <Input
+              type="url"
               value={repo}
-              disabled={loading}
+              disabled={busy}
               onChange={(e) => setRepo(e.target.value)}
               placeholder="https://github.com/team/repo"
             />
@@ -280,150 +386,84 @@ export default function Page() {
 
           {/* Track-specific stats --------------------------------- */}
           {track === "virality" && (
-            <div className="space-y-4">
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div className="space-y-2">
-                  <label className="block text-sm font-medium text-fg">
-                    Impressions
-                  </label>
-                  <p className="text-xs text-muted">
-                    Total impressions (all platforms, organic + ads×0.25)
-                  </p>
-                  <Input
-                    type="number"
-                    inputMode="numeric"
-                    value={stats.impressions}
-                    disabled={loading}
-                    onChange={(e) =>
-                      setStats({ ...stats, impressions: e.target.value })
-                    }
-                    placeholder="0"
-                  />
-                </div>
-                <div className="space-y-2">
-                  <label className="block text-sm font-medium text-fg">
-                    Reactions & comments
-                  </label>
-                  <p className="text-xs text-muted">
-                    Reactions & comments (aggregated)
-                  </p>
-                  <Input
-                    type="number"
-                    inputMode="numeric"
-                    value={stats.reactions}
-                    disabled={loading}
-                    onChange={(e) =>
-                      setStats({ ...stats, reactions: e.target.value })
-                    }
-                    placeholder="0"
-                  />
-                </div>
-                <div className="space-y-2">
-                  <label className="block text-sm font-medium text-fg">
-                    Visitors
-                  </label>
-                  <p className="text-xs text-muted">
-                    Unique visitors to product
-                  </p>
-                  <Input
-                    type="number"
-                    inputMode="numeric"
-                    value={stats.visitors}
-                    disabled={loading}
-                    onChange={(e) =>
-                      setStats({ ...stats, visitors: e.target.value })
-                    }
-                    placeholder="0"
-                  />
-                </div>
-                <div className="space-y-2">
-                  <label className="block text-sm font-medium text-fg">
-                    Signups
-                  </label>
-                  <p className="text-xs text-muted">
-                    Signups / meaningful actions
-                  </p>
-                  <Input
-                    type="number"
-                    inputMode="numeric"
-                    value={stats.signups}
-                    disabled={loading}
-                    onChange={(e) =>
-                      setStats({ ...stats, signups: e.target.value })
-                    }
-                    placeholder="0"
-                  />
-                </div>
+            <div className="space-y-4 rounded-md border border-line bg-surface/50 p-5">
+              <div className="text-xs uppercase tracking-[0.18em] font-medium text-muted">
+                Virality stats · self-reported
               </div>
-              <div className="space-y-2">
-                <label className="block text-sm font-medium text-fg">
-                  Amplification
-                </label>
-                <p className="text-xs text-muted">
-                  Amplification notes (who reshared, any notable accounts)
-                </p>
-                <Input
-                  value={stats.amplification}
-                  disabled={loading}
-                  onChange={(e) =>
-                    setStats({ ...stats, amplification: e.target.value })
-                  }
-                  placeholder="@founder_x reshared; picked up by TechCrunch..."
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <StatInput
+                  label="Impressions"
+                  helper="Total impressions (organic + ads × 0.25)"
+                  value={stats.impressions}
+                  disabled={busy}
+                  onChange={(v) => setStats({ ...stats, impressions: v })}
+                  type="number"
+                />
+                <StatInput
+                  label="Reactions & comments"
+                  helper="Aggregated across platforms"
+                  value={stats.reactions}
+                  disabled={busy}
+                  onChange={(v) => setStats({ ...stats, reactions: v })}
+                  type="number"
+                />
+                <StatInput
+                  label="Visitors"
+                  helper="Unique visitors to product"
+                  value={stats.visitors}
+                  disabled={busy}
+                  onChange={(v) => setStats({ ...stats, visitors: v })}
+                  type="number"
+                />
+                <StatInput
+                  label="Signups / actions"
+                  helper="Email + first-use event"
+                  value={stats.signups}
+                  disabled={busy}
+                  onChange={(v) => setStats({ ...stats, signups: v })}
+                  type="number"
                 />
               </div>
+              <StatInput
+                label="Amplification notes"
+                helper="Who reshared — named accounts, PH feature, press, etc."
+                value={stats.amplification}
+                disabled={busy}
+                onChange={(v) => setStats({ ...stats, amplification: v })}
+                placeholder="@founder_x (42k) reshared; picked up by TechCrunch..."
+              />
             </div>
           )}
 
           {track === "revenue" && (
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <div className="space-y-2">
-                <label className="block text-sm font-medium text-fg">
-                  Signups
-                </label>
-                <p className="text-xs text-muted">Signups</p>
-                <Input
-                  type="number"
-                  inputMode="numeric"
+            <div className="space-y-4 rounded-md border border-line bg-surface/50 p-5">
+              <div className="text-xs uppercase tracking-[0.18em] font-medium text-muted">
+                Revenue stats · self-reported
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                <StatInput
+                  label="Signups"
+                  helper="Email + first-use event"
                   value={stats.signups}
-                  disabled={loading}
-                  onChange={(e) =>
-                    setStats({ ...stats, signups: e.target.value })
-                  }
-                  placeholder="0"
-                />
-              </div>
-              <div className="space-y-2">
-                <label className="block text-sm font-medium text-fg">
-                  Revenue (USD)
-                </label>
-                <p className="text-xs text-muted">
-                  Revenue generated (USD, product only)
-                </p>
-                <Input
+                  disabled={busy}
+                  onChange={(v) => setStats({ ...stats, signups: v })}
                   type="number"
-                  inputMode="numeric"
+                />
+                <StatInput
+                  label="Revenue (USD)"
+                  helper="Product money only, not services"
                   value={stats.revenueUSD}
-                  disabled={loading}
-                  onChange={(e) =>
-                    setStats({ ...stats, revenueUSD: e.target.value })
-                  }
-                  placeholder="0"
-                />
-              </div>
-              <div className="space-y-2">
-                <label className="block text-sm font-medium text-fg">
-                  Waitlist
-                </label>
-                <p className="text-xs text-muted">Waitlist emails</p>
-                <Input
+                  disabled={busy}
+                  onChange={(v) => setStats({ ...stats, revenueUSD: v })}
                   type="number"
-                  inputMode="numeric"
+                />
+                <StatInput
+                  label="Waitlist"
+                  helper="Emails without product touch"
                   value={stats.waitlist}
-                  disabled={loading}
-                  onChange={(e) =>
-                    setStats({ ...stats, waitlist: e.target.value })
-                  }
-                  placeholder="0"
+                  disabled={busy}
+                  onChange={(v) => setStats({ ...stats, waitlist: v })}
+                  type="number"
                 />
               </div>
             </div>
@@ -433,17 +473,17 @@ export default function Page() {
             <Button
               type="submit"
               size="xl"
-              disabled={loading || !url.trim()}
+              disabled={busy || !url.trim()}
               className="w-full sm:w-auto"
             >
-              {loading ? "Scoring…" : "Score it"}
-              {!loading && <ArrowRight className="h-5 w-5" strokeWidth={2.5} />}
+              {busy ? "Scoring…" : "Score it"}
+              {!busy && <ArrowRight className="h-5 w-5" strokeWidth={2.5} />}
             </Button>
           </div>
         </form>
 
         {/* Loading state ------------------------------------------- */}
-        {loading && <LoadingBar phase={phase} elapsed={elapsed} />}
+        {busy && <LoadingBar phase={phase} elapsed={elapsed} />}
 
         {/* Error state --------------------------------------------- */}
         {error && (
@@ -454,6 +494,12 @@ export default function Page() {
             <div className="font-mono text-sm text-fg/90 whitespace-pre-wrap break-words">
               {error}
             </div>
+            <button
+              onClick={() => setError(null)}
+              className="mt-4 text-xs uppercase tracking-[0.18em] text-muted hover:text-acid"
+            >
+              Dismiss
+            </button>
           </div>
         )}
 
@@ -495,12 +541,6 @@ function Header() {
         </div>
         <nav className="flex items-center gap-5">
           <Link
-            href="/submit"
-            className="text-xs font-mono uppercase tracking-[0.18em] text-muted hover:text-acid"
-          >
-            Submit
-          </Link>
-          <Link
             href="/admin"
             prefetch={false}
             className="text-xs font-mono uppercase tracking-[0.18em] text-muted hover:text-acid"
@@ -510,6 +550,39 @@ function Header() {
         </nav>
       </div>
     </header>
+  );
+}
+
+function StatInput({
+  label,
+  helper,
+  value,
+  disabled,
+  onChange,
+  type,
+  placeholder,
+}: {
+  label: string;
+  helper?: string;
+  value: string;
+  disabled?: boolean;
+  onChange: (v: string) => void;
+  type?: string;
+  placeholder?: string;
+}) {
+  return (
+    <div className="space-y-2">
+      <label className="block text-sm font-medium text-fg">{label}</label>
+      {helper && <p className="text-xs text-muted">{helper}</p>}
+      <Input
+        type={type}
+        inputMode={type === "number" ? "numeric" : undefined}
+        value={value}
+        disabled={disabled}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder ?? (type === "number" ? "0" : "")}
+      />
+    </div>
   );
 }
 
@@ -536,12 +609,31 @@ function LoadingBar({ phase, elapsed }: { phase: number; elapsed: number }) {
   );
 }
 
-function ResultView({ data }: { data: ScoreResult }) {
+function ResultView({ data }: { data: Submission }) {
   const isNom = data.verdict === "NOMINATE";
   const meta = getTrackMeta(data.track);
 
   return (
     <div className="space-y-10">
+      {/* Team/User line (only on real runs with team info) ------- */}
+      {data.id && data.teamName && data.teamName !== "Anonymous" && (
+        <div className="flex flex-wrap items-baseline justify-between gap-3">
+          <div>
+            <div className="text-xs uppercase tracking-[0.18em] font-medium text-muted mb-2">
+              Scored · {data.teamName}
+            </div>
+            <div className="text-sm font-mono text-sub">
+              {data.userName || "—"} · {data.liveUrl}
+            </div>
+          </div>
+          {typeof data.rank === "number" && (
+            <div className="text-xs font-mono text-muted uppercase tracking-[0.18em]">
+              Rank #{data.rank} on leaderboard
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Verdict banner ------------------------------------------- */}
       <div
         className={
@@ -633,7 +725,7 @@ function RubricRow({
 
   return (
     <div className="flex flex-col md:flex-row md:items-start md:gap-6 py-4 border-b border-line">
-      {/* Weight + title — fixed-width block on desktop */}
+      {/* Weight + title */}
       <div className="flex items-start gap-3 md:w-64 shrink-0">
         <span className="text-xs font-mono text-muted tabular-nums pt-[3px] w-8 shrink-0">
           ×{meta?.weight ?? "?"}
@@ -643,7 +735,7 @@ function RubricRow({
         </span>
       </div>
 
-      {/* Pills + evidence grouped with tight inner gap — no wasted space between them */}
+      {/* Pills + evidence */}
       <div className="flex flex-col md:flex-row md:items-start md:gap-3 gap-2 flex-1 min-w-0">
         <div className="flex items-center gap-1 shrink-0">
           {[1, 2, 3, 4, 5].map((n) => (
@@ -666,7 +758,5 @@ function LevelPill({ n, selected }: { n: number; selected: boolean }) {
       <div className={base + " bg-acid text-black font-semibold"}>L{n}</div>
     );
   }
-  return (
-    <div className={base + " border border-line text-muted"}>L{n}</div>
-  );
+  return <div className={base + " border border-line text-muted"}>L{n}</div>;
 }

@@ -7,7 +7,7 @@
  */
 import { NextResponse } from "next/server";
 import { getSubmission, saveScored, saveFailed } from "@/lib/store";
-import { runScoring, ScoreError } from "@/lib/score-runner";
+import { runScoringByTrack, ScoreError } from "@/lib/score-runner";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -29,8 +29,16 @@ export async function POST(
     return NextResponse.json({ ok: true, submission: sub, skipped: "already scored" });
   }
 
+  const track = sub.track === "virality" || sub.track === "revenue" ? sub.track : "maas";
+
   try {
-    const result = await runScoring(sub.liveUrl, sub.repoUrl, `submission:${id}`);
+    const result = await runScoringByTrack(
+      track,
+      sub.liveUrl,
+      sub.repoUrl,
+      sub.stats,
+      `submission:${id}:${track}`
+    );
     const updated = await saveScored(id, {
       scores: result.scores,
       total: result.total,

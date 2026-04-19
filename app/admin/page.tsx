@@ -13,7 +13,13 @@ import Link from "next/link";
 import { ArrowUpRight, ChevronDown } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { RUBRIC_ORDER, RUBRIC_LABELS, levelNumber } from "@/lib/rubric-meta";
+import {
+  RUBRIC_ORDER,
+  RUBRIC_LABELS,
+  levelNumber,
+  getTrackMeta,
+  type RubricLabel,
+} from "@/lib/rubric-meta";
 
 type ScoreCell = { level: string; evidence: string };
 type Note = { mentor: string; text: string; at: string };
@@ -300,17 +306,21 @@ function SubmissionRow({
                 </div>
               )}
 
-              {sub.status === "scored" && sub.scores && (
-                <div className="border-t border-line">
-                  {RUBRIC_ORDER.map((key) => (
-                    <MiniRubricRow
-                      key={key}
-                      rubricKey={key}
-                      score={sub.scores![key]}
-                    />
-                  ))}
-                </div>
-              )}
+              {sub.status === "scored" && sub.scores && (() => {
+                const meta = getTrackMeta((sub as any).track);
+                return (
+                  <div className="border-t border-line">
+                    {meta.order.map((key) => (
+                      <MiniRubricRow
+                        key={key}
+                        rubricKey={key}
+                        score={sub.scores![key]}
+                        labels={meta.labels}
+                      />
+                    ))}
+                  </div>
+                );
+              })()}
 
               {sub.pitch && (
                 <div>
@@ -355,20 +365,22 @@ function SubmissionRow({
 function MiniRubricRow({
   rubricKey,
   score,
+  labels,
 }: {
   rubricKey: string;
   score: ScoreCell | undefined;
+  labels?: Record<string, RubricLabel>;
 }) {
-  const meta = RUBRIC_LABELS[rubricKey];
+  const meta = (labels || RUBRIC_LABELS)[rubricKey];
   const L = levelNumber(score?.level);
   return (
     <div className="grid grid-cols-12 gap-3 py-2.5 border-b border-line">
       <div className="col-span-4 flex items-baseline gap-2">
         <span className="text-[10px] font-mono text-muted tabular-nums pt-[2px] w-7">
-          ×{meta.weight}
+          ×{meta?.weight ?? "?"}
         </span>
         <span className="text-[13px] font-medium text-fg leading-snug">
-          {meta.title}
+          {meta?.title ?? rubricKey}
         </span>
       </div>
       <div className="col-span-3 flex items-center">
