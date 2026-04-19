@@ -14,8 +14,32 @@ export interface RubricEntry {
 
 export const RUBRIC: Record<string, RubricEntry>;
 
-export function productInspector(html: string, url: string): Promise<Record<string, ScoreCell>>;
-export function repoAuditor(repoUrl: string | null | undefined): Promise<Record<string, ScoreCell>>;
+export interface PlannedAgent {
+  name: "productInspector" | "repoAuditor";
+  focusInstructions: string;
+}
+
+export interface Plan {
+  agents: PlannedAgent[];
+  skipReasons?: Array<{ agent: string; reason: string }>;
+}
+
+export function planExecution(
+  url: string,
+  repoUrl: string | null | undefined
+): Promise<Plan>;
+
+export function productInspector(
+  html: string,
+  url: string,
+  focusInstructions?: string
+): Promise<Record<string, ScoreCell>>;
+
+export function repoAuditor(
+  repoUrl: string | null | undefined,
+  focusInstructions?: string
+): Promise<Record<string, ScoreCell>>;
+
 export function pitchWriter(
   scores: Record<string, ScoreCell>,
   total: number,
