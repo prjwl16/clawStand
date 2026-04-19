@@ -19,11 +19,8 @@ type ScoreResult = {
 };
 
 /**
- * Honest ClawStand self-score. Shown before any real run so passers-by can
- * understand the product at a glance. Deliberately CUT — the judge cuts itself
- * when its own discipline layer doesn't meet the bar.
- *   total = (3-1)*20 + (4-1)*5 + (2-1)*7 + (1-1)*5 + (2-1)*2 + (3-1)*1 + (3-1)*1
- *         = 40 + 15 + 7 + 0 + 2 + 2 + 2 = 68
+ * Honest ClawStand self-score. Shown before any real run.
+ * total = (3-1)*20 + (4-1)*5 + (2-1)*7 + (1-1)*5 + (2-1)*2 + (3-1)*1 + (3-1)*1 = 68
  */
 const SAMPLE: ScoreResult = {
   scores: {
@@ -94,7 +91,6 @@ export default function Page() {
   const resultsRef = useRef<HTMLDivElement | null>(null);
   const startRef = useRef<number>(0);
 
-  // Phase cycler so the ~30s wait shows movement.
   useEffect(() => {
     if (!loading) return;
     setPhase(0);
@@ -154,23 +150,25 @@ export default function Page() {
     <main className="min-h-screen">
       <Header />
 
-      <div className="mx-auto max-w-5xl px-6 sm:px-10 pt-16 pb-20">
-        {/* Tagline + subtext --------------------------------------- */}
-        <section className="max-w-3xl">
-          <h1 className="text-4xl sm:text-5xl lg:text-6xl font-semibold tracking-tight leading-[1.05] text-fg">
-            An AI judge for hackathon submissions.
+      <div className="mx-auto max-w-5xl px-6 sm:px-10 pt-14 pb-20">
+        {/* Tagline -------------------------------------------------- */}
+        <section>
+          <h1 className="text-5xl sm:text-6xl lg:text-7xl font-bold tracking-tight leading-[0.98] text-fg">
+            An AI judge
+            <br />
+            for hackathon submissions.
           </h1>
-          <p className="mt-5 text-lg sm:text-xl text-sub leading-relaxed max-w-2xl">
-            Scores against the GrowthX MaaS rubric. Writes the mentor
-            pitch-down verdict.
+          <p className="mt-5 text-base sm:text-lg text-sub max-w-xl leading-relaxed">
+            Scores against the GrowthX MaaS rubric. Writes the pitch-down
+            verdict.
           </p>
         </section>
 
         {/* Input form ---------------------------------------------- */}
-        <form onSubmit={submit} className="mt-12 space-y-6">
+        <form onSubmit={submit} className="mt-10 space-y-5">
           <div className="space-y-2">
             <label className="block text-sm font-medium text-fg">
-              Live URL <span className="text-cut">*</span>
+              Live URL <span className="text-acid">*</span>
             </label>
             <Input
               required
@@ -195,7 +193,7 @@ export default function Page() {
             />
           </div>
 
-          <div className="pt-2">
+          <div className="pt-1">
             <Button
               type="submit"
               size="xl"
@@ -211,13 +209,13 @@ export default function Page() {
         {/* Loading state ------------------------------------------- */}
         {loading && <LoadingBar phase={phase} elapsed={elapsed} />}
 
-        {/* Error box ------------------------------------------------ */}
+        {/* Error state --------------------------------------------- */}
         {error && (
-          <div className="mt-10 rounded-xl border border-cut/60 bg-cut/5 p-6">
-            <div className="text-sm font-medium text-cut mb-2">
-              Scoring failed
+          <div className="mt-8 rounded-md border border-line bg-surface p-5">
+            <div className="text-xs uppercase tracking-wider font-medium text-acid mb-2">
+              Error
             </div>
-            <div className="font-mono text-sm text-cut/90 whitespace-pre-wrap break-words">
+            <div className="font-mono text-sm text-fg/90 whitespace-pre-wrap break-words">
               {error}
             </div>
           </div>
@@ -225,8 +223,20 @@ export default function Page() {
 
         {/* Results (real OR sample) --------------------------------- */}
         {(result || showingSample) && (
-          <div ref={result ? resultsRef : null} className={result ? "mt-16 animate-fade" : "mt-20"}>
-            {showingSample && <SampleIntro />}
+          <div
+            ref={result ? resultsRef : null}
+            className={result ? "mt-14 animate-fade" : "mt-16"}
+          >
+            {showingSample && (
+              <div className="mb-8">
+                <div className="text-xs uppercase tracking-[0.18em] font-medium text-muted mb-3">
+                  Example output
+                </div>
+                <h2 className="text-2xl sm:text-3xl font-semibold tracking-tight text-fg">
+                  Here&rsquo;s ClawStand scoring itself.
+                </h2>
+              </div>
+            )}
             <ResultView data={result || SAMPLE} />
           </div>
         )}
@@ -236,175 +246,101 @@ export default function Page() {
 }
 
 /* ------------------------------------------------------------------ */
-/*   Sections                                                         */
-/* ------------------------------------------------------------------ */
 
 function Header() {
   return (
     <header className="border-b border-line">
-      <div className="mx-auto max-w-5xl px-6 sm:px-10 h-14 flex items-center justify-between">
-        <div className="flex items-center gap-2.5">
-          <span className="inline-block h-2 w-2 rounded-full bg-acid" />
-          <span className="text-base font-medium tracking-tight text-fg">
+      <div className="mx-auto max-w-5xl px-6 sm:px-10 h-12 flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <span className="inline-block h-1.5 w-1.5 rounded-full bg-acid" />
+          <span className="text-sm font-semibold tracking-tight text-fg">
             ClawStand
           </span>
         </div>
-        <div className="text-xs sm:text-sm text-sub">
-          MaaS rubric <span className="text-muted">·</span> 164 max
+        <div className="text-xs text-sub">
+          MaaS rubric <span className="text-line">·</span> 164 max
         </div>
       </div>
     </header>
   );
 }
 
-function SampleIntro() {
-  return (
-    <div className="mb-6">
-      <div className="inline-flex items-center gap-2 rounded-full border border-line bg-surface px-3 py-1 text-xs font-medium text-sub mb-4">
-        <span className="inline-block h-1.5 w-1.5 rounded-full bg-acid" />
-        Sample output
-      </div>
-      <h2 className="text-2xl sm:text-3xl font-semibold tracking-tight text-fg">
-        See it in action: here&rsquo;s ClawStand scoring itself.
-      </h2>
-      <p className="mt-2 text-sub">
-        Below is what a real judgment looks like. Paste a URL above to run
-        your own.
-      </p>
-    </div>
-  );
-}
-
 function LoadingBar({ phase, elapsed }: { phase: number; elapsed: number }) {
+  const pct = ((phase + 0.4) / PHASES.length) * 100;
   return (
-    <div className="mt-8 rounded-xl border border-line bg-surface p-5">
-      <div className="flex items-center justify-between gap-4 flex-wrap">
+    <div className="mt-8 rounded-md border border-line bg-surface p-5">
+      <div className="flex items-center justify-between gap-4">
         <div className="flex items-center gap-3">
-          <span className="inline-block h-2 w-2 rounded-full bg-acid animate-blink" />
+          <span className="inline-block h-1.5 w-1.5 rounded-full bg-acid animate-blink" />
           <span className="text-sm text-fg">{PHASES[phase]}…</span>
         </div>
-        <div className="text-xs font-mono text-muted">
-          step {phase + 1} of {PHASES.length} · {String(elapsed).padStart(2, "0")}s
+        <div className="text-xs font-mono text-muted tabular-nums">
+          {String(elapsed).padStart(2, "0")}s
         </div>
       </div>
-      <div className="mt-4 grid grid-cols-4 gap-2">
-        {PHASES.map((_, i) => (
-          <div
-            key={i}
-            className={
-              "h-[3px] rounded-full transition-colors " +
-              (i < phase
-                ? "bg-acid"
-                : i === phase
-                ? "bg-acid/50 animate-pulse"
-                : "bg-line")
-            }
-          />
-        ))}
+      <div className="mt-4 h-[2px] bg-line overflow-hidden">
+        <div
+          className="h-full bg-acid transition-all duration-700"
+          style={{ width: `${pct}%` }}
+        />
       </div>
     </div>
   );
 }
 
 function ResultView({ data }: { data: ScoreResult }) {
-  const pct = Math.round((data.total / data.maxTotal) * 100);
   const isNom = data.verdict === "NOMINATE";
 
   return (
     <div className="space-y-10">
-      {/* Verdict banner */}
+      {/* Verdict banner ------------------------------------------- */}
       <div
         className={
-          "w-full rounded-xl flex items-center justify-center h-[72px] sm:h-20 " +
-          (isNom ? "bg-nom text-black" : "bg-cut text-white")
+          "w-full rounded-md flex items-center justify-center h-24 " +
+          (isNom ? "bg-acid text-black" : "bg-fg text-bg")
         }
       >
-        <span className="text-4xl sm:text-5xl font-bold tracking-wide">
+        <span className="text-5xl sm:text-6xl font-bold tracking-tight">
           {data.verdict}
         </span>
       </div>
 
-      {/* Score */}
-      <div className="flex items-end justify-between gap-6 flex-wrap">
-        <div>
-          <div className="text-xs uppercase tracking-wider text-muted mb-2">
-            Total score
-          </div>
-          <div className="flex items-end gap-3">
-            <span className="text-7xl sm:text-8xl lg:text-9xl font-bold tracking-tight leading-none tabular-nums text-fg">
-              {data.total}
-            </span>
-            <span className="text-3xl sm:text-4xl font-semibold text-muted pb-2 sm:pb-3 tabular-nums">
-              / {data.maxTotal}
-            </span>
-          </div>
+      {/* Score ---------------------------------------------------- */}
+      <div className="flex items-baseline justify-between gap-6 flex-wrap">
+        <div className="flex items-baseline gap-3">
+          <span className="text-7xl sm:text-8xl lg:text-9xl font-extrabold tracking-tight leading-none tabular-nums text-fg">
+            {data.total}
+          </span>
+          <span className="text-2xl sm:text-3xl font-medium text-muted tabular-nums">
+            / {data.maxTotal}
+          </span>
         </div>
-        <div className="text-right">
-          <div className="text-xs uppercase tracking-wider text-muted mb-2">
-            {pct}% of max
-          </div>
-          <div className="w-48 h-1.5 rounded-full bg-line overflow-hidden">
-            <div
-              className={
-                "h-full rounded-full " + (isNom ? "bg-nom" : "bg-cut")
-              }
-              style={{ width: `${Math.max(2, pct)}%` }}
-            />
-          </div>
-          <div className="mt-2 text-xs text-muted">
-            Nominate bar: 82 / 164 (50%)
-          </div>
+        <div className="text-xs uppercase tracking-[0.18em] font-medium text-muted">
+          Total score
         </div>
       </div>
 
-      {/* Rubric table */}
-      <div className="rounded-xl border border-line overflow-hidden">
-        <div className="hidden md:grid grid-cols-12 gap-6 px-6 py-3 border-b border-line bg-surface text-xs uppercase tracking-wider text-muted">
-          <div className="col-span-4">Parameter</div>
-          <div className="col-span-3">Level</div>
-          <div className="col-span-5">Evidence</div>
-        </div>
-        {RUBRIC_ORDER.map((key, idx) => (
+      {/* Rubric table --------------------------------------------- */}
+      <div className="border-t border-line">
+        {RUBRIC_ORDER.map((key) => (
           <RubricRow
             key={key}
             rubricKey={key}
             score={data.scores[key]}
-            isLast={idx === RUBRIC_ORDER.length - 1}
           />
         ))}
       </div>
 
-      {/* Pitch card */}
+      {/* Pitch card ----------------------------------------------- */}
       <div>
-        <div className="text-xs uppercase tracking-wider text-muted mb-3">
-          The pitch <span className="text-line">·</span> read aloud, ~60 seconds
+        <div className="text-xs uppercase tracking-[0.18em] font-medium text-muted mb-3">
+          Pitch · 60s spoken
         </div>
-        <div className="rounded-xl border border-line bg-surface p-8 sm:p-10 border-l-[6px] border-l-acid">
-          <p className="text-lg sm:text-[20px] leading-[1.65] text-fg">
+        <div className="rounded-md bg-surface border-l-[3px] border-l-acid py-7 px-7 sm:py-8 sm:px-9">
+          <p className="text-lg sm:text-[20px] leading-[1.6] text-fg">
             {data.pitch}
           </p>
-          {data.reasoning && (
-            <p className="mt-6 pt-6 border-t border-line text-sm text-sub leading-relaxed">
-              <span className="text-muted">Reasoning:</span> {data.reasoning}
-            </p>
-          )}
         </div>
-      </div>
-
-      {/* Inputs strip */}
-      <div className="flex flex-wrap items-center gap-x-8 gap-y-2 text-xs text-muted pt-4 border-t border-line">
-        <span>
-          <span className="text-sub">URL:</span>{" "}
-          <span className="font-mono text-fg/80 break-all">
-            {data.inputs.url}
-          </span>
-        </span>
-        <span>
-          <span className="text-sub">Repo:</span>{" "}
-          <span className="font-mono text-fg/80 break-all">
-            {data.inputs.repo || "—"}
-          </span>
-        </span>
       </div>
     </div>
   );
@@ -413,38 +349,29 @@ function ResultView({ data }: { data: ScoreResult }) {
 function RubricRow({
   rubricKey,
   score,
-  isLast,
 }: {
   rubricKey: string;
   score: ScoreCell | undefined;
-  isLast: boolean;
 }) {
   const meta = RUBRIC_LABELS[rubricKey];
   const L = levelNumber(score?.level);
   const evidence = score?.evidence || "—";
 
   return (
-    <div
-      className={
-        "grid grid-cols-1 md:grid-cols-12 gap-4 md:gap-6 px-6 py-5 items-center " +
-        (isLast ? "" : "border-b border-line")
-      }
-    >
-      {/* Parameter */}
-      <div className="md:col-span-4">
-        <div className="text-[15px] font-medium text-fg leading-tight">
+    <div className="grid grid-cols-1 md:grid-cols-12 gap-3 md:gap-6 py-4 border-b border-line">
+      {/* Parameter + weight */}
+      <div className="md:col-span-4 flex items-start gap-3">
+        <span className="text-xs font-mono text-muted tabular-nums pt-[3px] w-8 shrink-0">
+          ×{meta.weight}
+        </span>
+        <span className="text-[15px] font-medium text-fg leading-snug">
           {meta.title}
-        </div>
-        <div className="mt-1 text-xs text-muted font-mono">
-          weight ×{meta.weight}
-          <span className="text-line mx-1.5">·</span>
-          max {4 * meta.weight} pts
-        </div>
+        </span>
       </div>
 
       {/* Level pills */}
       <div className="md:col-span-3">
-        <div className="flex items-center gap-1.5">
+        <div className="flex items-center gap-1">
           {[1, 2, 3, 4, 5].map((n) => (
             <LevelPill key={n} n={n} selected={n === L} />
           ))}
@@ -453,23 +380,23 @@ function RubricRow({
 
       {/* Evidence */}
       <div className="md:col-span-5">
-        <p className="text-sm text-sub font-mono leading-relaxed">{evidence}</p>
+        <p className="text-[13px] text-sub font-mono leading-relaxed">
+          {evidence}
+        </p>
       </div>
     </div>
   );
 }
 
 function LevelPill({ n, selected }: { n: number; selected: boolean }) {
+  const base =
+    "h-7 min-w-[34px] px-2 rounded-md font-mono text-[11px] tabular-nums flex items-center justify-center transition-colors";
   if (selected) {
     return (
-      <div className="h-8 min-w-[40px] px-2.5 rounded-full bg-acid text-black font-semibold text-xs flex items-center justify-center tabular-nums">
-        L{n}
-      </div>
+      <div className={base + " bg-acid text-black font-semibold"}>L{n}</div>
     );
   }
   return (
-    <div className="h-8 min-w-[40px] px-2.5 rounded-full border border-line text-muted font-medium text-xs flex items-center justify-center tabular-nums">
-      L{n}
-    </div>
+    <div className={base + " border border-line text-muted"}>L{n}</div>
   );
 }

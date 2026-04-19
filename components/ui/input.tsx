@@ -9,11 +9,11 @@ const Input = React.forwardRef<HTMLInputElement, InputProps>(
       <input
         type={type}
         className={cn(
-          // Boxed, filled dark input with generous padding — values in monospace.
+          // Boxed, filled, sharp — values in monospace.
           "flex w-full bg-surface text-fg placeholder:text-muted",
-          "border border-line rounded-xl",
-          "h-16 px-5 py-4 text-base font-mono",
-          "focus-visible:outline-none focus-visible:border-acid focus-visible:ring-2 focus-visible:ring-acid/30",
+          "border border-line rounded-md",
+          "h-14 px-4 py-3 text-base font-mono",
+          "focus-visible:outline-none focus-visible:border-acid focus-visible:ring-1 focus-visible:ring-acid",
           "disabled:opacity-50 disabled:cursor-not-allowed",
           "transition-colors",
           className

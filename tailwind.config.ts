@@ -1,5 +1,9 @@
 import type { Config } from "tailwindcss";
 
+/**
+ * Palette doctrine: ONE accent. Acid lime. Everything else lives on the
+ * black <-> white axis. NOMINATE is the loud one. CUT is the cold one.
+ */
 const config: Config = {
   darkMode: "class",
   content: [
@@ -16,8 +20,6 @@ const config: Config = {
         muted: "#737373",
         line: "#262626",
         acid: "#DDFF00",
-        nom: "#22c55e",
-        cut: "#ef4444",
       },
       fontFamily: {
         sans: ["var(--font-sans)", "system-ui", "sans-serif"],
@@ -26,7 +28,7 @@ const config: Config = {
       keyframes: {
         blink: {
           "0%, 100%": { opacity: "1" },
-          "50%": { opacity: "0.2" },
+          "50%": { opacity: "0.25" },
         },
         fade: {
           "0%": { opacity: "0", transform: "translateY(4px)" },
@@ -35,7 +37,7 @@ const config: Config = {
       },
       animation: {
         blink: "blink 1.1s ease-in-out infinite",
-        fade: "fade 0.4s ease-out forwards",
+        fade: "fade 0.35s ease-out forwards",
       },
     },
   },
