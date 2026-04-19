@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import Link from "next/link";
 import { ArrowRight, ArrowUpRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -258,9 +259,24 @@ function Header() {
             ClawStand
           </span>
         </div>
-        <div className="text-xs text-sub">
-          MaaS rubric <span className="text-line">·</span> 164 max
-        </div>
+        <nav className="flex items-center gap-5">
+          <Link
+            href="/submit"
+            className="text-xs font-mono uppercase tracking-[0.18em] text-muted hover:text-acid"
+          >
+            Submit
+          </Link>
+          <Link
+            href="/admin"
+            className="text-xs font-mono uppercase tracking-[0.18em] text-muted hover:text-acid"
+          >
+            Admin
+          </Link>
+          <span className="hidden sm:inline text-line">·</span>
+          <span className="hidden sm:inline text-xs text-sub">
+            MaaS rubric <span className="text-line">·</span> 164 max
+          </span>
+        </nav>
       </div>
     </header>
   );

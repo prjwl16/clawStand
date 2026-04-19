@@ -17,6 +17,7 @@
     "@ai-sdk/anthropic": "^3.0.71",
     "@anthropic-ai/sdk": "^0.90.0",
     "@radix-ui/react-slot": "^1.1.2",
+    "@vercel/blob": "^2.3.3",
     "ai": "^6.0.168",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",

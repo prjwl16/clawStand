@@ -35,3 +35,4 @@ next-env.d.ts
 # misc
 *.pem
 .vercel
+.env*.local
