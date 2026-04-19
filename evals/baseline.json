@@ -1,0 +1,51 @@
+{
+  "_meta": {
+    "description": "Golden baselines for the 4-case eval harness. Ranges are padded to tolerate LLM non-determinism. If a run falls outside these windows, the eval flags it — treat that as either (a) a real regression to investigate or (b) a baseline that needs updating after a prompt change.",
+    "updated": "2026-04-19"
+  },
+  "cases": {
+    "dearpatient": {
+      "url": "https://dearpatient.in/",
+      "repo": "https://github.com/vateru/core-api",
+      "expected": {
+        "verdict": "CUT",
+        "totalRange": [25, 60],
+        "productTriage": "REAL_MAAS",
+        "plannerRanRepoAuditor": true
+      }
+    },
+    "linear": {
+      "url": "https://linear.app/",
+      "repo": "https://github.com/linear/linear",
+      "expected": {
+        "verdict": "CUT",
+        "totalRange": [0, 15],
+        "productTriage": "NOT_MAAS",
+        "repoTriage": "NOT_MAAS",
+        "plannerRanRepoAuditor": true
+      }
+    },
+    "clawstand": {
+      "url": "https://clawstand.vercel.app/",
+      "repo": "https://github.com/prjwl16/clawStand",
+      "expected": {
+        "verdict": "NOMINATE",
+        "totalRange": [72, 105],
+        "productTriage": "REAL_MAAS",
+        "repoTriage": "REAL_MAAS",
+        "plannerRanRepoAuditor": true
+      }
+    },
+    "excalidraw": {
+      "url": "https://excalidraw.com/",
+      "repo": "https://github.com/excalidraw/excalidraw",
+      "expected": {
+        "verdict": "CUT",
+        "totalRange": [0, 15],
+        "productTriage": "NOT_MAAS",
+        "repoTriage": "NOT_MAAS",
+        "plannerRanRepoAuditor": true
+      }
+    }
+  }
+}
