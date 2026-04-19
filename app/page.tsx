@@ -268,6 +268,7 @@ function Header() {
           </Link>
           <Link
             href="/admin"
+            prefetch={false}
             className="text-xs font-mono uppercase tracking-[0.18em] text-muted hover:text-acid"
           >
             Admin
