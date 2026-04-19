@@ -13,6 +13,36 @@ export interface RubricEntry {
 }
 
 export const RUBRIC: Record<string, RubricEntry>;
+export const RUBRIC_VIRALITY: Record<string, RubricEntry>;
+export const RUBRIC_REVENUE: Record<string, RubricEntry>;
+
+export interface ViralityStats {
+  impressions?: number;
+  reactions?: number;
+  visitors?: number;
+  signups?: number;
+  amplification?: string;
+}
+
+export interface RevenueStats {
+  signups?: number;
+  revenueUSD?: number;
+  waitlist?: number;
+}
+
+export function viralityJudge(input: {
+  url: string;
+  html: string;
+  stats?: ViralityStats;
+  repoUrl?: string | null;
+}): Promise<Record<string, ScoreCell>>;
+
+export function revenueJudge(input: {
+  url: string;
+  html: string;
+  stats?: RevenueStats;
+  repoUrl?: string | null;
+}): Promise<Record<string, ScoreCell>>;
 
 export interface PlannedAgent {
   name: "productInspector" | "repoAuditor";
@@ -45,5 +75,11 @@ export function repoAuditor(
 export function pitchWriter(
   scores: Record<string, ScoreCell>,
   total: number,
-  maxTotal: number
+  maxTotal: number,
+  opts?: {
+    trackName?: string;
+    rubric?: Record<string, RubricEntry>;
+    rootKey?: string;
+    nomThreshold?: number;
+  }
 ): Promise<{ verdict: "NOMINATE" | "CUT"; pitch: string; reasoning: string }>;

@@ -606,7 +606,7 @@ function ResultView({ data }: { data: ScoreResult }) {
               Traced via Langfuse
             </span>
             <span className="text-line group-hover:text-acid/60">·</span>
-            <span>view 3 agent spans</span>
+            <span>view trace</span>
             <ArrowUpRight
               className="h-3 w-3 group-hover:translate-x-[1px] group-hover:-translate-y-[1px] transition-transform"
               strokeWidth={2}
