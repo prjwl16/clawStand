@@ -1,5 +1,5 @@
 require('dotenv').config({ override: true });
-const { RUBRIC, productInspector, repoAuditor, pitchWriter } = require('./agents');
+const { RUBRIC, productInspector, repoAuditor, pitchWriter } = require('./lib/agents');
 
 function getFlag(name) {
   const eqArg = process.argv.find(a => a.startsWith(`--${name}=`));
