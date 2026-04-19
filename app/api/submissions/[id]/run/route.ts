@@ -6,7 +6,12 @@
  * Must run on Node runtime (Anthropic SDK + fs for local dev store).
  */
 import { NextResponse } from "next/server";
-import { getSubmission, saveScored, saveFailed } from "@/lib/store";
+import {
+  getSubmission,
+  saveScored,
+  saveFailed,
+  resetForRerun,
+} from "@/lib/store";
 import { runScoringByTrack, ScoreError } from "@/lib/score-runner";
 
 export const runtime = "nodejs";
@@ -21,12 +26,12 @@ export async function POST(
   const sub = await getSubmission(id);
   if (!sub) return NextResponse.json({ error: "not found" }, { status: 404 });
 
-  // Idempotency: don't re-run a submission that's already scored or actively
-  // scoring. The status model here is binary (pending / scored / failed) so
-  // concurrent /run calls will both proceed — the last writer wins. Acceptable
-  // for a hackathon demo; re-triggering a score is a feature anyway.
-  if (sub.status === "scored") {
-    return NextResponse.json({ ok: true, submission: sub, skipped: "already scored" });
+  // Reruns are now first-class. If the submission has already been scored
+  // (or failed), wipe the prior result so the leaderboard immediately shows
+  // "scoring…" while the agents run again. Initial submissions are already
+  // pending so the reset is a cheap no-op for that path.
+  if (sub.status !== "pending") {
+    await resetForRerun(id);
   }
 
   const track = sub.track === "virality" || sub.track === "revenue" ? sub.track : "maas";

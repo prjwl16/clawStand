@@ -10,7 +10,7 @@
  */
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { ArrowUpRight, ChevronDown } from "lucide-react";
+import { ArrowUpRight, ChevronDown, RotateCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -195,12 +195,42 @@ function SubmissionRow({
   const isNom = sub.verdict === "NOMINATE";
   const isScored = sub.status === "scored";
 
+  // Rerun state lives on the row so both the row-header icon button and the
+  // expanded ActionsBar can share busy/error state without double-firing.
+  const [rerunBusy, setRerunBusy] = useState(false);
+  const [rerunErr, setRerunErr] = useState<string | null>(null);
+  const canRerun = sub.status === "scored" || sub.status === "failed";
+
+  function rerun() {
+    if (rerunBusy || !canRerun) return;
+    setRerunBusy(true);
+    setRerunErr(null);
+    // Fire-and-forget — the route writes pending status before it kicks off
+    // the ~30s pipeline, so a quick refresh shortly after will flip the row
+    // to "scoring…" and the page's 10s polling takes it from there.
+    fetch(`/api/submissions/${sub.id}/run`, { method: "POST" }).catch(() => {
+      setRerunErr("Network error");
+    });
+    setTimeout(() => {
+      onMutated();
+      setRerunBusy(false);
+    }, 800);
+  }
+
   return (
     <div className="border-b border-line">
-      {/* Summary row */}
-      <button
+      {/* Summary row — div role=button so anchor children are legal HTML */}
+      <div
+        role="button"
+        tabIndex={0}
         onClick={onToggle}
-        className="w-full grid grid-cols-1 md:grid-cols-12 gap-2 md:gap-4 py-4 text-left hover:bg-surface transition-colors"
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            onToggle();
+          }
+        }}
+        className="w-full grid grid-cols-1 md:grid-cols-12 gap-2 md:gap-4 py-4 text-left hover:bg-surface transition-colors cursor-pointer focus:outline-none focus-visible:bg-surface"
       >
         {/* Rank */}
         <div className="md:col-span-1 flex items-baseline gap-2">
@@ -221,18 +251,29 @@ function SubmissionRow({
           </div>
         </div>
 
-        {/* URL */}
+        {/* URLs — clickable, open in new tab, don't toggle the row */}
         <div className="md:col-span-3 min-w-0">
-          <div className="text-xs font-mono text-sub truncate" title={sub.liveUrl}>
+          <a
+            href={sub.liveUrl}
+            target="_blank"
+            rel="noreferrer noopener"
+            onClick={(e) => e.stopPropagation()}
+            title={sub.liveUrl}
+            className="block text-xs font-mono text-sub truncate hover:text-acid hover:underline transition-colors"
+          >
             {sub.liveUrl.replace(/^https?:\/\//, "")}
-          </div>
+          </a>
           {sub.repoUrl && (
-            <div
-              className="text-xs font-mono text-muted truncate"
+            <a
+              href={sub.repoUrl}
+              target="_blank"
+              rel="noreferrer noopener"
+              onClick={(e) => e.stopPropagation()}
               title={sub.repoUrl}
+              className="block text-xs font-mono text-muted truncate hover:text-acid hover:underline transition-colors"
             >
               {sub.repoUrl.replace(/^https?:\/\//, "")}
-            </div>
+            </a>
           )}
         </div>
 
@@ -272,12 +313,29 @@ function SubmissionRow({
           )}
         </div>
 
-        {/* Notes / chevron */}
+        {/* Notes / rerun / chevron */}
         <div className="md:col-span-2 flex items-center justify-end gap-3">
           {sub.notes.length > 0 && (
             <span className="text-xs font-mono text-muted">
               {sub.notes.length} note{sub.notes.length === 1 ? "" : "s"}
             </span>
+          )}
+          {canRerun && (
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                rerun();
+              }}
+              disabled={rerunBusy}
+              title={rerunBusy ? "Rerunning agents…" : "Rerun agents"}
+              className="inline-flex items-center justify-center h-7 w-7 rounded-md text-muted hover:text-acid hover:bg-line transition-colors disabled:opacity-50 disabled:hover:text-muted disabled:hover:bg-transparent"
+            >
+              <RotateCw
+                className={"h-3.5 w-3.5 " + (rerunBusy ? "animate-spin text-acid" : "")}
+                strokeWidth={2}
+              />
+              <span className="sr-only">Rerun agents</span>
+            </button>
           )}
           <ChevronDown
             className={
@@ -287,7 +345,7 @@ function SubmissionRow({
             strokeWidth={2}
           />
         </div>
-      </button>
+      </div>
 
       {/* Expanded body ------------------------------------- */}
       {isOpen && (
@@ -333,22 +391,13 @@ function SubmissionRow({
                 </div>
               )}
 
-              {sub.traceUrl && (
-                <a
-                  href={sub.traceUrl}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="inline-flex items-center gap-1.5 text-xs font-mono text-muted hover:text-acid transition-colors group"
-                >
-                  <span className="uppercase tracking-[0.18em]">
-                    Langfuse trace
-                  </span>
-                  <ArrowUpRight
-                    className="h-3 w-3 group-hover:translate-x-[1px] group-hover:-translate-y-[1px] transition-transform"
-                    strokeWidth={2}
-                  />
-                </a>
-              )}
+              <ActionsBar
+                sub={sub}
+                canRerun={canRerun}
+                rerunBusy={rerunBusy}
+                rerunErr={rerunErr}
+                onRerun={rerun}
+              />
             </div>
 
             {/* Right: notes */}
@@ -408,6 +457,66 @@ function MiniRubricRow({
           {score?.evidence || "—"}
         </p>
       </div>
+    </div>
+  );
+}
+
+/**
+ * Bottom-of-expanded-row toolbar. Surfaces the Langfuse trace link and a
+ * labeled "Rerun agents" action that mirrors the icon-button in the row
+ * header — both bind to the same lifted state in SubmissionRow so they
+ * stay in sync (clicking either flips both into the busy state).
+ */
+function ActionsBar({
+  sub,
+  canRerun,
+  rerunBusy,
+  rerunErr,
+  onRerun,
+}: {
+  sub: Submission;
+  canRerun: boolean;
+  rerunBusy: boolean;
+  rerunErr: string | null;
+  onRerun: () => void;
+}) {
+  if (!canRerun && !sub.traceUrl) return null;
+
+  return (
+    <div className="flex flex-wrap items-center gap-x-5 gap-y-3 pt-2">
+      {sub.traceUrl && (
+        <a
+          href={sub.traceUrl}
+          target="_blank"
+          rel="noreferrer"
+          className="inline-flex items-center gap-1.5 text-xs font-mono text-muted hover:text-acid transition-colors group"
+        >
+          <span className="uppercase tracking-[0.18em]">Langfuse trace</span>
+          <ArrowUpRight
+            className="h-3 w-3 group-hover:translate-x-[1px] group-hover:-translate-y-[1px] transition-transform"
+            strokeWidth={2}
+          />
+        </a>
+      )}
+
+      {canRerun && (
+        <button
+          onClick={onRerun}
+          disabled={rerunBusy}
+          className="inline-flex items-center gap-1.5 text-xs font-mono uppercase tracking-[0.18em] text-muted hover:text-acid transition-colors disabled:opacity-50 disabled:hover:text-muted"
+          title="Re-run all agents and recompute the score"
+        >
+          <RotateCw
+            className={"h-3 w-3 " + (rerunBusy ? "animate-spin text-acid" : "")}
+            strokeWidth={2}
+          />
+          <span>{rerunBusy ? "rerunning…" : "rerun agents"}</span>
+        </button>
+      )}
+
+      {rerunErr && (
+        <span className="text-xs font-mono text-acid normal-case">{rerunErr}</span>
+      )}
     </div>
   );
 }

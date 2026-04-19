@@ -318,6 +318,35 @@ export async function queueStats(): Promise<{
   return { pending, scored, failed, total: subs.length };
 }
 
+/**
+ * Reset a submission back to "pending" so the scoring pipeline can be
+ * re-run from the admin UI. Clears all previously-computed score fields
+ * so the leaderboard doesn't keep stale numbers while the rerun is in
+ * flight. Keeps id, team/user, urls, track, stats and notes intact.
+ */
+export async function resetForRerun(id: string): Promise<Submission | null> {
+  return withSubLock(id, async () => {
+    const existing = await readOne(id);
+    if (!existing) return null;
+    const updated: Submission = {
+      ...existing,
+      status: "pending",
+      scores: undefined,
+      total: undefined,
+      maxTotal: undefined,
+      verdict: undefined,
+      pitch: undefined,
+      reasoning: undefined,
+      traceUrl: undefined,
+      plan: undefined,
+      error: undefined,
+      scoredAt: undefined,
+    };
+    await writeOne(updated);
+    return updated;
+  });
+}
+
 export async function saveScored(
   id: string,
   patch: Partial<Submission>
