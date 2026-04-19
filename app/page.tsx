@@ -1,10 +1,9 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ArrowRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Badge } from "@/components/ui/badge";
 import { RUBRIC_ORDER, RUBRIC_LABELS, levelNumber } from "@/lib/rubric-meta";
 
 type ScoreCell = { level: string; evidence: string };
@@ -19,11 +18,69 @@ type ScoreResult = {
   inputs: { url: string; repo: string | null };
 };
 
+/**
+ * Honest ClawStand self-score. Shown before any real run so passers-by can
+ * understand the product at a glance. Deliberately CUT — the judge cuts itself
+ * when its own discipline layer doesn't meet the bar.
+ *   total = (3-1)*20 + (4-1)*5 + (2-1)*7 + (1-1)*5 + (2-1)*2 + (3-1)*1 + (3-1)*1
+ *         = 40 + 15 + 7 + 0 + 2 + 2 + 2 = 68
+ */
+const SAMPLE: ScoreResult = {
+  scores: {
+    realOutputShipping: {
+      level: "L3",
+      evidence:
+        "Working product that scores submissions from a URL. Used end-to-end in testing, not yet in active use by external judges.",
+    },
+    taskDecompositionQuality: {
+      level: "L4",
+      evidence:
+        "Three named specialist agents — Product Inspector, Repo Auditor, Pitch Writer — with typed JSON contracts and independently testable steps.",
+    },
+    observability: {
+      level: "L2",
+      evidence:
+        "Scattered console.log statements prefixed with [repoAuditor]. No structured tracing or Langfuse integration yet.",
+    },
+    evaluationAndIterationTooling: {
+      level: "L1",
+      evidence:
+        "No eval suite. Prompt changes judged by eye only. No regression tracking across versions.",
+    },
+    agentHandoffsAndMemory: {
+      level: "L2",
+      evidence:
+        "Handoffs exist — scores object passed from auditor to pitch writer — but there is no memory across runs.",
+    },
+    costAndLatencyOnJudgeTask: {
+      level: "L3",
+      evidence:
+        "~30 seconds end-to-end with three Claude Sonnet 4.5 calls. Estimated well under $0.10 per judgment.",
+    },
+    managementUIUsability: {
+      level: "L3",
+      evidence:
+        "Functional single-page UI. A non-developer can paste a URL, click, and see a verdict without help.",
+    },
+  },
+  total: 68,
+  maxTotal: 164,
+  verdict: "CUT",
+  pitch:
+    "I'd love to tell you ClawStand nominates itself. It doesn't. Here's the honest ledger: we ship a real product — L3 on the root parameter. Mentors paste a URL and get a verdict in thirty seconds at sub-ten-cent cost. Task decomposition is L4: three named specialists, typed contracts, each step testable on its own. But we fail the discipline bar. Zero evals. No regression tests on the prompts. Observability is console logs and nothing more. No Langfuse. No traces. No memory across runs. Sixty-eight out of one-sixty-four. Below the fifty-percent threshold. If ClawStand stood before ClawStand, it would say: build the eval harness, wire the tracing, come back next week. Cut.",
+  reasoning:
+    "ClawStand ships a working product (L3 root) and decomposes its pipeline cleanly (L4), but it lacks the discipline layer — evals, tracing, durable memory — that separates hackathon work from operational production. 68/164 falls below the 82 nominate threshold.",
+  inputs: {
+    url: "https://clawstand.vercel.app",
+    repo: "https://github.com/prjwl16/clawStand",
+  },
+};
+
 const PHASES = [
-  "fetching live product HTML",
-  "product inspector reading the page",
-  "repo auditor querying GitHub",
-  "pitch writer composing the verdict",
+  "Fetching the live product",
+  "Product inspector reading the page",
+  "Repo auditor querying GitHub",
+  "Pitch writer composing the verdict",
 ];
 
 export default function Page() {
@@ -37,13 +94,13 @@ export default function Page() {
   const resultsRef = useRef<HTMLDivElement | null>(null);
   const startRef = useRef<number>(0);
 
-  // Advance the phase label so the user gets feedback across the ~30s wait.
+  // Phase cycler so the ~30s wait shows movement.
   useEffect(() => {
     if (!loading) return;
     setPhase(0);
     setElapsed(0);
     startRef.current = Date.now();
-    const phaseTimers = [
+    const timers = [
       setTimeout(() => setPhase(1), 2500),
       setTimeout(() => setPhase(2), 9000),
       setTimeout(() => setPhase(3), 20000),
@@ -52,7 +109,7 @@ export default function Page() {
       setElapsed(Math.floor((Date.now() - startRef.current) / 1000));
     }, 250);
     return () => {
-      phaseTimers.forEach(clearTimeout);
+      timers.forEach(clearTimeout);
       clearInterval(tick);
     };
   }, [loading]);
@@ -91,188 +148,143 @@ export default function Page() {
     }
   }
 
-  const runSeconds = useMemo(() => {
-    if (!result) return null;
-    return elapsed; // final elapsed at the moment loading flipped off
-  }, [result, elapsed]);
+  const showingSample = !result && !loading && !error;
 
   return (
-    <main className="relative z-10 min-h-screen">
-      <TopBar />
+    <main className="min-h-screen">
+      <Header />
 
-      <section className="mx-auto max-w-6xl px-6 sm:px-10 pt-20 pb-10">
-        <Hero />
-        <div className="mt-16">
-          <InputCard
-            url={url}
-            repo={repo}
-            loading={loading}
-            onUrl={setUrl}
-            onRepo={setRepo}
-            onSubmit={submit}
-          />
-        </div>
+      <div className="mx-auto max-w-5xl px-6 sm:px-10 pt-16 pb-20">
+        {/* Tagline + subtext --------------------------------------- */}
+        <section className="max-w-3xl">
+          <h1 className="text-4xl sm:text-5xl lg:text-6xl font-semibold tracking-tight leading-[1.05] text-fg">
+            An AI judge for hackathon submissions.
+          </h1>
+          <p className="mt-5 text-lg sm:text-xl text-sub leading-relaxed max-w-2xl">
+            Scores against the GrowthX MaaS rubric. Writes the mentor
+            pitch-down verdict.
+          </p>
+        </section>
 
-        {loading && <PhaseBar phase={phase} elapsed={elapsed} />}
+        {/* Input form ---------------------------------------------- */}
+        <form onSubmit={submit} className="mt-12 space-y-6">
+          <div className="space-y-2">
+            <label className="block text-sm font-medium text-fg">
+              Live URL <span className="text-cut">*</span>
+            </label>
+            <Input
+              required
+              autoFocus
+              value={url}
+              disabled={loading}
+              onChange={(e) => setUrl(e.target.value)}
+              placeholder="https://your-submission.vercel.app"
+            />
+          </div>
 
+          <div className="space-y-2">
+            <label className="block text-sm font-medium text-fg">
+              GitHub repo{" "}
+              <span className="text-muted font-normal">(optional)</span>
+            </label>
+            <Input
+              value={repo}
+              disabled={loading}
+              onChange={(e) => setRepo(e.target.value)}
+              placeholder="https://github.com/team/repo"
+            />
+          </div>
+
+          <div className="pt-2">
+            <Button
+              type="submit"
+              size="xl"
+              disabled={loading || !url.trim()}
+              className="w-full sm:w-auto"
+            >
+              {loading ? "Scoring…" : "Score it"}
+              {!loading && <ArrowRight className="h-5 w-5" strokeWidth={2.5} />}
+            </Button>
+          </div>
+        </form>
+
+        {/* Loading state ------------------------------------------- */}
+        {loading && <LoadingBar phase={phase} elapsed={elapsed} />}
+
+        {/* Error box ------------------------------------------------ */}
         {error && (
-          <div className="mt-10 border border-cut/60 bg-cut/5 p-6">
-            <div className="font-mono text-[11px] uppercase tracking-[0.2em] text-cut/80 mb-2">
-              error · /api/score
+          <div className="mt-10 rounded-xl border border-cut/60 bg-cut/5 p-6">
+            <div className="text-sm font-medium text-cut mb-2">
+              Scoring failed
             </div>
-            <div className="font-mono text-sm text-cut whitespace-pre-wrap break-words">
+            <div className="font-mono text-sm text-cut/90 whitespace-pre-wrap break-words">
               {error}
             </div>
           </div>
         )}
 
-        {result && (
-          <div ref={resultsRef} className="mt-24 animate-fade">
-            <ResultsLedger result={result} runSeconds={runSeconds} />
+        {/* Results (real OR sample) --------------------------------- */}
+        {(result || showingSample) && (
+          <div ref={result ? resultsRef : null} className={result ? "mt-16 animate-fade" : "mt-20"}>
+            {showingSample && <SampleIntro />}
+            <ResultView data={result || SAMPLE} />
           </div>
         )}
-      </section>
-
-      <Footer />
+      </div>
     </main>
   );
 }
 
 /* ------------------------------------------------------------------ */
-/* Sections                                                           */
+/*   Sections                                                         */
 /* ------------------------------------------------------------------ */
 
-function TopBar() {
+function Header() {
   return (
-    <div className="border-b border-line">
-      <div className="mx-auto max-w-6xl px-6 sm:px-10 h-10 flex items-center justify-between font-mono text-[10px] uppercase tracking-[0.28em] text-sub">
-        <div className="flex items-center gap-4">
-          <span className="text-acid">●</span>
-          <span>maas rubric</span>
-          <span className="text-line">/</span>
-          <span>growthx</span>
-          <span className="text-line">/</span>
-          <span>164 max</span>
-        </div>
-        <div className="flex items-center gap-4">
-          <span>iteration ii</span>
-          <span className="text-line">/</span>
-          <span>the writ</span>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function Hero() {
-  return (
-    <div className="grid grid-cols-12 gap-8 items-end">
-      <div className="col-span-12 lg:col-span-9">
-        <div className="font-mono text-[11px] uppercase tracking-[0.3em] text-sub mb-6">
-          <span className="text-acid">§</span> a ledger of hackathon claims
-        </div>
-        <h1 className="font-serif italic leading-[0.88] tracking-tight text-ink">
-          <span className="block text-[7.5rem] sm:text-[11rem] lg:text-[14rem]">
+    <header className="border-b border-line">
+      <div className="mx-auto max-w-5xl px-6 sm:px-10 h-14 flex items-center justify-between">
+        <div className="flex items-center gap-2.5">
+          <span className="inline-block h-2 w-2 rounded-full bg-acid" />
+          <span className="text-base font-medium tracking-tight text-fg">
             ClawStand
           </span>
-        </h1>
-        <p className="mt-8 max-w-2xl font-serif italic text-2xl sm:text-3xl leading-tight text-ink/85">
-          A live judge for MaaS submissions. Paste a URL.
-          <br />
-          Read the verdict <span className="text-acid not-italic font-sans font-medium">aloud</span>.
-        </p>
-      </div>
-      <div className="hidden lg:block col-span-3">
-        <div className="border border-line p-5">
-          <div className="font-mono text-[10px] uppercase tracking-[0.28em] text-sub mb-3">
-            weights
-          </div>
-          <ul className="space-y-1.5 font-mono text-[11px]">
-            {RUBRIC_ORDER.map((k) => (
-              <li key={k} className="flex items-center justify-between gap-3">
-                <span className="text-ink/80 truncate">{RUBRIC_LABELS[k].title}</span>
-                <span className="text-acid">×{RUBRIC_LABELS[k].weight}</span>
-              </li>
-            ))}
-          </ul>
+        </div>
+        <div className="text-xs sm:text-sm text-sub">
+          MaaS rubric <span className="text-muted">·</span> 164 max
         </div>
       </div>
+    </header>
+  );
+}
+
+function SampleIntro() {
+  return (
+    <div className="mb-6">
+      <div className="inline-flex items-center gap-2 rounded-full border border-line bg-surface px-3 py-1 text-xs font-medium text-sub mb-4">
+        <span className="inline-block h-1.5 w-1.5 rounded-full bg-acid" />
+        Sample output
+      </div>
+      <h2 className="text-2xl sm:text-3xl font-semibold tracking-tight text-fg">
+        See it in action: here&rsquo;s ClawStand scoring itself.
+      </h2>
+      <p className="mt-2 text-sub">
+        Below is what a real judgment looks like. Paste a URL above to run
+        your own.
+      </p>
     </div>
   );
 }
 
-function InputCard(props: {
-  url: string;
-  repo: string;
-  loading: boolean;
-  onUrl: (v: string) => void;
-  onRepo: (v: string) => void;
-  onSubmit: (e: React.FormEvent) => void;
-}) {
-  const { url, repo, loading, onUrl, onRepo, onSubmit } = props;
+function LoadingBar({ phase, elapsed }: { phase: number; elapsed: number }) {
   return (
-    <form onSubmit={onSubmit} className="border-y border-line py-10">
-      <div className="grid grid-cols-12 gap-8">
-        <div className="col-span-12 lg:col-span-7">
-          <label className="block font-mono text-[10px] uppercase tracking-[0.28em] text-sub mb-2">
-            01 · live url <span className="text-cut">*</span>
-          </label>
-          <Input
-            required
-            autoFocus
-            value={url}
-            disabled={loading}
-            onChange={(e) => onUrl(e.target.value)}
-            placeholder="https://your-submission.vercel.app"
-            className="text-2xl sm:text-3xl h-16"
-          />
-        </div>
-        <div className="col-span-12 lg:col-span-5">
-          <label className="block font-mono text-[10px] uppercase tracking-[0.28em] text-sub mb-2">
-            02 · github repo <span className="text-sub/70">(optional)</span>
-          </label>
-          <Input
-            value={repo}
-            disabled={loading}
-            onChange={(e) => onRepo(e.target.value)}
-            placeholder="https://github.com/team/repo"
-            className="text-2xl sm:text-3xl h-16"
-          />
-        </div>
-      </div>
-
-      <div className="mt-10 flex flex-wrap items-center justify-between gap-6">
-        <p className="max-w-xl font-serif italic text-sub text-base">
-          Three specialist agents run in parallel. The pitch writer delivers
-          the verdict last. <span className="text-ink/70">~20–40 seconds.</span>
-        </p>
-        <Button
-          type="submit"
-          size="lg"
-          disabled={loading || !url.trim()}
-          className="min-w-[220px] font-mono uppercase tracking-[0.2em] text-[13px]"
-        >
-          {loading ? "scoring…" : "score it"}
-          {!loading && <ArrowRight className="h-4 w-4" strokeWidth={2.5} />}
-        </Button>
-      </div>
-    </form>
-  );
-}
-
-function PhaseBar({ phase, elapsed }: { phase: number; elapsed: number }) {
-  return (
-    <div className="mt-10 border border-line p-6">
+    <div className="mt-8 rounded-xl border border-line bg-surface p-5">
       <div className="flex items-center justify-between gap-4 flex-wrap">
-        <div className="flex items-center gap-3 font-mono text-sm">
-          <span className="text-acid animate-blink">▮</span>
-          <span className="text-sub uppercase tracking-[0.22em] text-[11px]">
-            phase {phase + 1} / {PHASES.length}
-          </span>
-          <span className="text-ink">{PHASES[phase]}</span>
+        <div className="flex items-center gap-3">
+          <span className="inline-block h-2 w-2 rounded-full bg-acid animate-blink" />
+          <span className="text-sm text-fg">{PHASES[phase]}…</span>
         </div>
-        <div className="font-mono text-[11px] text-sub uppercase tracking-[0.22em]">
-          t+{String(elapsed).padStart(2, "0")}s
+        <div className="text-xs font-mono text-muted">
+          step {phase + 1} of {PHASES.length} · {String(elapsed).padStart(2, "0")}s
         </div>
       </div>
       <div className="mt-4 grid grid-cols-4 gap-2">
@@ -280,11 +292,11 @@ function PhaseBar({ phase, elapsed }: { phase: number; elapsed: number }) {
           <div
             key={i}
             className={
-              "h-[3px] " +
+              "h-[3px] rounded-full transition-colors " +
               (i < phase
                 ? "bg-acid"
                 : i === phase
-                ? "bg-acid/60 animate-pulse"
+                ? "bg-acid/50 animate-pulse"
                 : "bg-line")
             }
           />
@@ -294,183 +306,118 @@ function PhaseBar({ phase, elapsed }: { phase: number; elapsed: number }) {
   );
 }
 
-function ResultsLedger({
-  result,
-  runSeconds,
-}: {
-  result: ScoreResult;
-  runSeconds: number | null;
-}) {
-  const pct = Math.round((result.total / result.maxTotal) * 100);
-  const verdictColor = result.verdict === "NOMINATE" ? "text-nom" : "text-cut";
+function ResultView({ data }: { data: ScoreResult }) {
+  const pct = Math.round((data.total / data.maxTotal) * 100);
+  const isNom = data.verdict === "NOMINATE";
 
   return (
-    <div className="space-y-24">
-      {/* THE LEDGER ---------------------------------------------------- */}
-      <section>
-        <LedgerHeader kicker="i" title="The Ledger" subtitle="seven parameters, levels L1 through L5" />
-        <div className="border-t border-line">
-          {RUBRIC_ORDER.map((key, i) => (
-            <ParamRow key={key} rubricKey={key} score={result.scores[key]} index={i} />
-          ))}
-        </div>
-      </section>
+    <div className="space-y-10">
+      {/* Verdict banner */}
+      <div
+        className={
+          "w-full rounded-xl flex items-center justify-center h-[72px] sm:h-20 " +
+          (isNom ? "bg-nom text-black" : "bg-cut text-white")
+        }
+      >
+        <span className="text-4xl sm:text-5xl font-bold tracking-wide">
+          {data.verdict}
+        </span>
+      </div>
 
-      {/* THE TOTAL ----------------------------------------------------- */}
-      <section>
-        <LedgerHeader kicker="ii" title="The Total" subtitle="weighted sum across seven parameters" />
-        <div className="grid grid-cols-12 gap-8 mt-6">
-          <div className="col-span-12 lg:col-span-7">
-            <div className="flex items-end gap-4">
-              <span className="font-serif italic text-[9rem] sm:text-[13rem] lg:text-[16rem] leading-[0.82] text-ink">
-                {result.total}
-              </span>
-              <span className="font-serif italic text-4xl sm:text-6xl text-sub pb-4">
-                / {result.maxTotal}
-              </span>
-            </div>
-            <div className="mt-6 h-[2px] bg-line relative overflow-hidden">
-              <div
-                className="h-full bg-acid"
-                style={{ width: `${Math.max(2, pct)}%` }}
-              />
-            </div>
-            <div className="mt-3 flex items-center justify-between font-mono text-[11px] uppercase tracking-[0.22em] text-sub">
-              <span>{pct}% of max</span>
-              <span>
-                nominate bar · <span className="text-ink">82 / 164 (50%)</span>
-              </span>
-            </div>
+      {/* Score */}
+      <div className="flex items-end justify-between gap-6 flex-wrap">
+        <div>
+          <div className="text-xs uppercase tracking-wider text-muted mb-2">
+            Total score
           </div>
-          <div className="col-span-12 lg:col-span-5">
-            <div className="border border-line p-6 h-full flex flex-col justify-between">
-              <div>
-                <div className="font-mono text-[10px] uppercase tracking-[0.28em] text-sub mb-3">
-                  root parameter
-                </div>
-                <div className="font-serif text-2xl text-ink italic">
-                  Real output shipping
-                </div>
-                <div className="mt-4 flex items-center gap-2">
-                  <BigLevelChip level={result.scores.realOutputShipping?.level || "L1"} />
-                  <span className="font-mono text-[11px] text-sub uppercase tracking-[0.22em]">
-                    × 20 weight
-                  </span>
-                </div>
-              </div>
-              <div className="mt-6 font-serif italic text-ink/80 text-sm leading-snug">
-                “If this is L1 or L2, nothing else saves it.”
-              </div>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      {/* THE VERDICT --------------------------------------------------- */}
-      <section>
-        <LedgerHeader kicker="iii" title="The Verdict" subtitle="as it would be read aloud on stage" />
-        <div className="mt-8">
-          <div className="flex flex-wrap items-baseline gap-x-8 gap-y-4">
-            <span className="font-mono text-[11px] uppercase tracking-[0.3em] text-sub">
-              the ruling
+          <div className="flex items-end gap-3">
+            <span className="text-7xl sm:text-8xl lg:text-9xl font-bold tracking-tight leading-none tabular-nums text-fg">
+              {data.total}
             </span>
-            <h2
+            <span className="text-3xl sm:text-4xl font-semibold text-muted pb-2 sm:pb-3 tabular-nums">
+              / {data.maxTotal}
+            </span>
+          </div>
+        </div>
+        <div className="text-right">
+          <div className="text-xs uppercase tracking-wider text-muted mb-2">
+            {pct}% of max
+          </div>
+          <div className="w-48 h-1.5 rounded-full bg-line overflow-hidden">
+            <div
               className={
-                "font-serif italic leading-[0.82] tracking-tight " +
-                "text-[8rem] sm:text-[12rem] lg:text-[16rem] " +
-                verdictColor
+                "h-full rounded-full " + (isNom ? "bg-nom" : "bg-cut")
               }
-            >
-              {result.verdict.toLowerCase()}
-            </h2>
+              style={{ width: `${Math.max(2, pct)}%` }}
+            />
           </div>
-          <p className="mt-6 max-w-4xl font-serif italic text-xl sm:text-2xl leading-snug text-ink/90">
-            {result.reasoning}
-          </p>
+          <div className="mt-2 text-xs text-muted">
+            Nominate bar: 82 / 164 (50%)
+          </div>
         </div>
-      </section>
+      </div>
 
-      {/* THE PITCH ----------------------------------------------------- */}
-      <section>
-        <LedgerHeader kicker="iv" title="The Pitch" subtitle="sixty seconds, spoken — first person" />
-        <div className="mt-6 border-l-[3px] border-acid pl-8 sm:pl-12 py-6 relative">
-          <span
-            aria-hidden
-            className="absolute -top-8 -left-2 font-serif italic text-[10rem] leading-none text-acid/90 select-none"
-          >
-            “
+      {/* Rubric table */}
+      <div className="rounded-xl border border-line overflow-hidden">
+        <div className="hidden md:grid grid-cols-12 gap-6 px-6 py-3 border-b border-line bg-surface text-xs uppercase tracking-wider text-muted">
+          <div className="col-span-4">Parameter</div>
+          <div className="col-span-3">Level</div>
+          <div className="col-span-5">Evidence</div>
+        </div>
+        {RUBRIC_ORDER.map((key, idx) => (
+          <RubricRow
+            key={key}
+            rubricKey={key}
+            score={data.scores[key]}
+            isLast={idx === RUBRIC_ORDER.length - 1}
+          />
+        ))}
+      </div>
+
+      {/* Pitch card */}
+      <div>
+        <div className="text-xs uppercase tracking-wider text-muted mb-3">
+          The pitch <span className="text-line">·</span> read aloud, ~60 seconds
+        </div>
+        <div className="rounded-xl border border-line bg-surface p-8 sm:p-10 border-l-[6px] border-l-acid">
+          <p className="text-lg sm:text-[20px] leading-[1.65] text-fg">
+            {data.pitch}
+          </p>
+          {data.reasoning && (
+            <p className="mt-6 pt-6 border-t border-line text-sm text-sub leading-relaxed">
+              <span className="text-muted">Reasoning:</span> {data.reasoning}
+            </p>
+          )}
+        </div>
+      </div>
+
+      {/* Inputs strip */}
+      <div className="flex flex-wrap items-center gap-x-8 gap-y-2 text-xs text-muted pt-4 border-t border-line">
+        <span>
+          <span className="text-sub">URL:</span>{" "}
+          <span className="font-mono text-fg/80 break-all">
+            {data.inputs.url}
           </span>
-          <p className="font-serif italic text-2xl sm:text-[2rem] leading-[1.25] text-ink/95 max-w-4xl">
-            {result.pitch}
-          </p>
-          <div className="mt-8 font-mono text-[11px] uppercase tracking-[0.28em] text-sub">
-            — the pitch · ~60s · claude sonnet 4.5
-          </div>
-        </div>
-      </section>
-
-      {/* RUN META ------------------------------------------------------ */}
-      <section>
-        <LedgerHeader kicker="v" title="The Receipt" subtitle="inputs and run metadata" />
-        <div className="mt-6 grid grid-cols-1 md:grid-cols-2 gap-0 border-t border-line">
-          <MetaRow label="live url" value={result.inputs.url} />
-          <MetaRow label="github repo" value={result.inputs.repo || "— not provided —"} />
-          <MetaRow
-            label="wall time"
-            value={runSeconds != null ? `${runSeconds}s` : "—"}
-          />
-          <MetaRow label="model" value="claude-sonnet-4-5-20250929" />
-          <MetaRow label="agents" value="inspector · auditor · pitch writer" />
-          <MetaRow
-            label="nominate rule"
-            value={
-              result.verdict === "NOMINATE"
-                ? "passed · ≥82 total · root ≥ L3"
-                : "failed heuristic"
-            }
-          />
-        </div>
-      </section>
-    </div>
-  );
-}
-
-/* ------------------------------------------------------------------ */
-/* Atoms                                                               */
-/* ------------------------------------------------------------------ */
-
-function LedgerHeader({
-  kicker,
-  title,
-  subtitle,
-}: {
-  kicker: string;
-  title: string;
-  subtitle: string;
-}) {
-  return (
-    <div className="flex items-end justify-between gap-6 border-b border-line pb-4">
-      <div className="flex items-baseline gap-6">
-        <span className="font-serif italic text-sub text-xl">{kicker}.</span>
-        <h2 className="font-serif italic text-4xl sm:text-5xl text-ink tracking-tight">
-          {title}
-        </h2>
-      </div>
-      <div className="hidden sm:block font-mono text-[10px] uppercase tracking-[0.28em] text-sub text-right">
-        {subtitle}
+        </span>
+        <span>
+          <span className="text-sub">Repo:</span>{" "}
+          <span className="font-mono text-fg/80 break-all">
+            {data.inputs.repo || "—"}
+          </span>
+        </span>
       </div>
     </div>
   );
 }
 
-function ParamRow({
+function RubricRow({
   rubricKey,
   score,
-  index,
+  isLast,
 }: {
   rubricKey: string;
   score: ScoreCell | undefined;
-  index: number;
+  isLast: boolean;
 }) {
   const meta = RUBRIC_LABELS[rubricKey];
   const L = levelNumber(score?.level);
@@ -479,100 +426,50 @@ function ParamRow({
   return (
     <div
       className={
-        "grid grid-cols-12 gap-6 items-start py-7 border-b border-line " +
-        (meta.root ? "bg-acid/[0.02]" : "")
+        "grid grid-cols-1 md:grid-cols-12 gap-4 md:gap-6 px-6 py-5 items-center " +
+        (isLast ? "" : "border-b border-line")
       }
     >
-      {/* index + weight */}
-      <div className="col-span-12 md:col-span-1 flex md:flex-col items-center md:items-start gap-3 md:gap-1 font-mono text-[11px] uppercase tracking-[0.22em] text-sub">
-        <span>{String(index + 1).padStart(2, "0")}</span>
-        <span className="text-acid">×{meta.weight}</span>
-      </div>
-
-      {/* param title + sub */}
-      <div className="col-span-12 md:col-span-4">
-        <div className="flex items-center gap-3 flex-wrap">
-          <span className="font-serif italic text-2xl text-ink leading-tight">
-            {meta.title}
-          </span>
-          {meta.root && <Badge variant="acid">root</Badge>}
+      {/* Parameter */}
+      <div className="md:col-span-4">
+        <div className="text-[15px] font-medium text-fg leading-tight">
+          {meta.title}
         </div>
-        <div className="mt-1 font-mono text-[11px] text-sub">{meta.sub}</div>
+        <div className="mt-1 text-xs text-muted font-mono">
+          weight ×{meta.weight}
+          <span className="text-line mx-1.5">·</span>
+          max {4 * meta.weight} pts
+        </div>
       </div>
 
-      {/* level row */}
-      <div className="col-span-12 md:col-span-3">
+      {/* Level pills */}
+      <div className="md:col-span-3">
         <div className="flex items-center gap-1.5">
           {[1, 2, 3, 4, 5].map((n) => (
-            <LevelCell key={n} n={n} selected={n === L} />
+            <LevelPill key={n} n={n} selected={n === L} />
           ))}
-        </div>
-        <div className="mt-2 font-mono text-[10px] uppercase tracking-[0.22em] text-sub">
-          points · <span className="text-ink">{(L - 1) * meta.weight}</span> /{" "}
-          {4 * meta.weight}
         </div>
       </div>
 
-      {/* evidence */}
-      <div className="col-span-12 md:col-span-4">
-        <div className="font-mono text-[10px] uppercase tracking-[0.28em] text-sub mb-1">
-          evidence
-        </div>
-        <p className="font-serif italic text-ink/90 text-[1.05rem] leading-snug">
-          {evidence}
-        </p>
+      {/* Evidence */}
+      <div className="md:col-span-5">
+        <p className="text-sm text-sub font-mono leading-relaxed">{evidence}</p>
       </div>
     </div>
   );
 }
 
-function LevelCell({ n, selected }: { n: number; selected: boolean }) {
+function LevelPill({ n, selected }: { n: number; selected: boolean }) {
   if (selected) {
     return (
-      <div className="h-9 min-w-[2.6rem] px-2 bg-acid text-black font-mono text-[12px] font-bold tracking-wider flex items-center justify-center">
+      <div className="h-8 min-w-[40px] px-2.5 rounded-full bg-acid text-black font-semibold text-xs flex items-center justify-center tabular-nums">
         L{n}
       </div>
     );
   }
   return (
-    <div className="h-9 min-w-[2.6rem] px-2 border border-line text-sub font-mono text-[12px] tracking-wider flex items-center justify-center">
+    <div className="h-8 min-w-[40px] px-2.5 rounded-full border border-line text-muted font-medium text-xs flex items-center justify-center tabular-nums">
       L{n}
     </div>
-  );
-}
-
-function BigLevelChip({ level }: { level: string }) {
-  const L = levelNumber(level);
-  return (
-    <div className="h-11 px-4 bg-acid text-black font-mono text-sm font-bold tracking-wider flex items-center">
-      L{L}
-    </div>
-  );
-}
-
-function MetaRow({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="flex items-baseline gap-6 px-0 py-3 border-b border-line">
-      <div className="w-40 font-mono text-[10px] uppercase tracking-[0.28em] text-sub shrink-0">
-        {label}
-      </div>
-      <div className="font-mono text-[13px] text-ink break-all">{value}</div>
-    </div>
-  );
-}
-
-function Footer() {
-  return (
-    <footer className="relative z-10 mt-32 border-t border-line">
-      <div className="mx-auto max-w-6xl px-6 sm:px-10 h-20 flex items-center justify-between font-mono text-[10px] uppercase tracking-[0.28em] text-sub">
-        <div className="flex items-center gap-4">
-          <span className="text-acid">●</span>
-          <span>clawstand</span>
-          <span className="text-line">/</span>
-          <span>built for the stage</span>
-        </div>
-        <div>read the verdict aloud.</div>
-      </div>
-    </footer>
   );
 }
