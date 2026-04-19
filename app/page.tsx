@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { ArrowRight } from "lucide-react";
+import { ArrowRight, ArrowUpRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { RUBRIC_ORDER, RUBRIC_LABELS, levelNumber } from "@/lib/rubric-meta";
@@ -16,6 +16,7 @@ type ScoreResult = {
   pitch: string;
   reasoning: string;
   inputs: { url: string; repo: string | null };
+  traceUrl?: string;
 };
 
 /**
@@ -342,6 +343,28 @@ function ResultView({ data }: { data: ScoreResult }) {
           </p>
         </div>
       </div>
+
+      {/* Trace link (real runs only) ------------------------------ */}
+      {data.traceUrl && (
+        <div className="pt-2">
+          <a
+            href={data.traceUrl}
+            target="_blank"
+            rel="noreferrer"
+            className="inline-flex items-center gap-1.5 text-xs font-mono text-muted hover:text-acid transition-colors group"
+          >
+            <span className="uppercase tracking-[0.18em]">
+              Traced via Langfuse
+            </span>
+            <span className="text-line group-hover:text-acid/60">·</span>
+            <span>view 3 agent spans</span>
+            <ArrowUpRight
+              className="h-3 w-3 group-hover:translate-x-[1px] group-hover:-translate-y-[1px] transition-transform"
+              strokeWidth={2}
+            />
+          </a>
+        </div>
+      )}
     </div>
   );
 }
