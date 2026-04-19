@@ -111,24 +111,122 @@ Ranking system across multiple submissions. Only if iterations 0-3 are deployed 
 - When I ask for a feature, build the minimum version. Not the good version.
 - If I ask for something not in this file, push back once, then do it if I insist.
 
-## Current state (as of end of Iteration 1)
+## Current state (as of end of Iteration 3)
 
-Iterations 0 and 1 are SHIPPED and working. Iterations 2, 3, 4 NOT started.
+Iterations 0, 1, 2, 3 are SHIPPED and working. Iteration 4 NOT started.
+
+**Live at https://clawstand.vercel.app** — production alias on Vercel. GitHub-connected; pushing to `main` auto-deploys in ~25-30s.
 
 ### Files
 
-- `judge.js` — CLI entry + orchestrator. Parses `--url` / `--repo`, fetches HTML, runs agents, computes weighted total, prints JSON.
-- `agents.js` — Exports `RUBRIC` constant + three async functions: `productInspector`, `repoAuditor`, `pitchWriter`. The RUBRIC lives here, not in a separate `rubric.ts` (the original spec mentioned `rubric.ts` — ignore that, it was pre-implementation speculation).
-- `.env` — Must contain `ANTHROPIC_API_KEY` and (optionally but strongly recommended) `GITHUB_TOKEN`.
-- `.env.example` — template.
+CLI (Iteration 0 + 1 — still works):
+- `judge.js` — CLI entry + orchestrator. Parses `--url` / `--repo`, fetches HTML, runs agents, computes weighted total, prints JSON. Require path updated from `./agents` to `./lib/agents` when I2 moved the module — otherwise unchanged.
 
-No other files. Do not add more until an iteration demands it.
+App (Iteration 2):
+- `app/layout.tsx` — root layout. Inter (sans) + JetBrains Mono via `next/font/google`. Metadata.
+- `app/page.tsx` — the single-page UI. Client component. Contains the `SAMPLE` constant (ClawStand self-score, CUT at 68/164) rendered before any real run.
+- `app/globals.css` — Tailwind base + minimal scrollbar/selection tint. Nothing decorative.
+- `app/api/score/route.ts` — POST `/api/score`. Orchestrates the 3-agent pipeline, wraps every run in a Langfuse trace, returns the locked JSON shape.
 
-### Stack deviation (IMPORTANT)
+Components (shadcn/ui — hand-written, no CLI):
+- `components/ui/button.tsx` — filled acid / ghost / outline variants. Sizes default / sm / lg / xl.
+- `components/ui/input.tsx` — boxed filled input, mono font, `rounded-md`, focus ring in acid.
+- `components/ui/card.tsx` — minimal wrapper. Currently unused by page.tsx but kept for future.
+- `components/ui/badge.tsx` — small pill with variants (default / acid / filled).
 
-The stack section above says "Vercel AI SDK (`ai` + `@ai-sdk/anthropic`) + Zod + generateObject". **Iteration 0 shipped using `@anthropic-ai/sdk` directly**, and Iteration 1 inherited that. The Next.js UI in Iteration 2 should still use Vercel AI SDK + Zod (per the spec). The terminal `judge.js` can stay on raw Anthropic SDK — do not rewrite it.
+Lib:
+- `lib/agents.js` — MOVED from root in I2. `RUBRIC` + `productInspector` + `repoAuditor` + `pitchWriter`. I3 rewrote the Product Inspector prompt to include MaaS eligibility triage (see below).
+- `lib/agents.d.ts` — TS declaration shim so `.ts` files can import the `.js` module cleanly. Only changes if the agent function signatures change.
+- `lib/rubric-meta.ts` — display metadata for the UI (`RUBRIC_ORDER`, `RUBRIC_LABELS`, `levelNumber` helper). Kept separate from `agents.js` so the agent file stays untouched per the "do not refactor" rule.
+- `lib/langfuse.ts` — Langfuse client singleton. **Uses named import** (`import { Langfuse } from "langfuse"`) — the default export is a browser-only client and will fail on the server.
+- `lib/utils.ts` — `cn()` helper (`clsx` + `tailwind-merge`) used by all shadcn components.
 
-Node interop quirk: `const Anthropic = require('@anthropic-ai/sdk'); new Anthropic.default();` — the `.default` is required because of CommonJS/ESM interop. Do not remove it.
+Configs (Iteration 2):
+- `next.config.js`, `tsconfig.json`, `postcss.config.js`, `tailwind.config.ts`, `next-env.d.ts`.
+
+Env:
+- `.env` — local. Must contain `ANTHROPIC_API_KEY`, `GITHUB_TOKEN`, `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, `LANGFUSE_BASE_URL`.
+- `.env.example` — template with all five keys.
+
+### Stack deviation (IMPORTANT — updated)
+
+The stack section above says "Vercel AI SDK (`ai` + `@ai-sdk/anthropic`) + Zod + generateObject".
+**What actually shipped: `@anthropic-ai/sdk` directly, across all iterations including I2 and I3.** This was intentional — Iteration 0 shipped that way and rewriting for the UI was not worth the time. The spec is wrong; reality wins. Do NOT rewrite to Vercel AI SDK / Zod unless someone explicitly asks.
+
+Node interop quirk (unchanged): `const Anthropic = require('@anthropic-ai/sdk'); new Anthropic.default();` — the `.default` is required because of CommonJS/ESM interop. Do not remove it.
+
+Installed dependencies:
+- Runtime: `@anthropic-ai/sdk`, `dotenv`, `langfuse`, `next@14.2.35`, `react@18`, `react-dom@18`
+- UI primitives: `@radix-ui/react-slot`, `class-variance-authority`, `clsx`, `tailwind-merge`, `lucide-react`
+- Dev: `typescript`, `@types/*`, `tailwindcss`, `postcss`, `autoprefixer`
+
+Font choice landmine: **Geist is NOT available in `next/font/google` on Next 14.x** — it needs the separate `geist` npm package. We use Inter (sans) + JetBrains Mono (mono) from `next/font/google` instead. If someone tries to switch to Geist and the build fails, this is why.
+
+### Deployment
+
+- Vercel project: `prjwl16s-projects/clawstand`, GitHub-connected to `github.com/prjwl16/clawStand`.
+- Production URL: https://clawstand.vercel.app (aliased; the unique deployment URLs require team auth).
+- Auto-deploy: any push to `main` triggers a build. Typical wall time 25-30s.
+- Manual deploy from CLI: `vercel --prod --yes` (works, but uploads local working-tree files — be careful not to ship uncommitted changes).
+
+Vercel env vars (Production + Development scopes — NOT Preview, which got stuck on an interactive git-branch prompt when adding; fix in dashboard if branch deploys are ever needed):
+- `ANTHROPIC_API_KEY` — required
+- `GITHUB_TOKEN` — optional but critical. Unauthenticated GitHub API rate-limits after ~8 runs (7 requests per audit). With a token: 5000 req/hr.
+- `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, `LANGFUSE_BASE_URL` — required for I3 tracing. Without them, `lib/langfuse.ts` constructs a client with `undefined` keys and fails SILENTLY at flush time (no crash, no traces). If traces aren't appearing in the dashboard, check these first.
+
+Route-level config in `app/api/score/route.ts`:
+- `export const runtime = "nodejs"` — the Anthropic SDK, Buffer decoding, and GitHub REST all need the Node runtime, not Edge.
+- `export const maxDuration = 60` — three LLM calls can push 30-40s; the default 10s kills the request.
+
+### Iteration 2 — UI design decisions (locked)
+
+Design doctrine: ONE accent color. Acid lime `#DDFF00`. Everything else lives on the black→white axis. Do not add green/red/blue variants without being asked.
+
+Verdict encoding:
+- `NOMINATE` → `bg-acid` + `text-black` (loud, celebratory)
+- `CUT` → `bg-fg` (white) + `text-bg` (black) (cold, sterile — NOT red)
+- Required-field asterisk → `text-acid` (indicator, not error)
+- Error box → neutral `border-line` + small `text-acid` "Error" label
+- Selected L1-L5 pill → `bg-acid text-black font-semibold`
+- Unselected L1-L5 pill → `border-line text-muted`
+
+Typography (Inter only — single sans):
+- Tagline (`h1`): `font-bold`, `text-5xl sm:text-6xl lg:text-7xl`, `leading-[0.98]`, `tracking-tight`, forced two-line break via `<br />`
+- Total score: `font-extrabold`, `text-7xl sm:text-8xl lg:text-9xl`, `tabular-nums`
+- Verdict word in banner: `font-bold`, `text-5xl sm:text-6xl`, `tracking-tight`
+- Param names: `font-medium text-[15px]`
+- Labels: `font-medium text-sm`
+- Body: `font-normal`
+- Mono (JetBrains Mono) is used ONLY for: input field values + evidence text in the rubric table + small utility metadata lines (elapsed time, weight chip, the Langfuse trace link).
+
+Corners: `rounded-md` (6px) on inputs, buttons, cards, banner, level pills. No `rounded-xl` anywhere — the design is sharp, not soft.
+
+Sample self-score: hardcoded `SAMPLE` constant in `app/page.tsx`. Honest CUT at 68/164 (realOutputShipping L3, decomposition L4, observability L2, evals L1, memory L2, cost L3, UI L3). Shown before any real run under the headline "Here's ClawStand scoring itself." This is critical for passers-by who walk up without interacting — the page must explain itself at a glance.
+
+### Iteration 3 — Langfuse observability
+
+- `lib/langfuse.ts`: singleton `Langfuse` client wired to env vars. Uses **named import** (see landmine above).
+- Every POST to `/api/score` creates a trace `clawstand-score` with three child spans:
+  - `productInspector` — input: `{ url, htmlLength }`, output: scores
+  - `repoAuditor` — input: `{ repo }`, output: scores
+  - `pitchWriter` — input: `{ scores, total, maxTotal }`, output: `{ verdict, pitch, reasoning }`
+  - Each span carries `{ model: "claude-sonnet-4-5-20250929", maxTokens }` in metadata.
+- `await langfuse.flushAsync()` is called before every early-return AND in the final `catch` — serverless functions freeze after response, so flush synchronously or traces are lost.
+- `trace.getTraceUrl()` is returned as `traceUrl` in the API response.
+- UI renders a subtle `TRACED VIA LANGFUSE · view 3 agent spans ↗` link under the pitch card. Conditionally rendered — only when `traceUrl` is present. The `SAMPLE` constant has no `traceUrl`, so the sample card intentionally doesn't show the link.
+
+### Product Inspector — MaaS eligibility triage (I3 prompt update)
+
+The Product Inspector prompt was rewritten to classify submissions BEFORE scoring:
+- `REAL_MAAS` — named agent + described autonomous workflows OR live agent behavior in the HTML. Scores L1-L5 on the actual evidence.
+- `WEAK_MAAS` — only weak positive signals (generic "AI-powered" copy, single chatbot widget on a non-agent product). Caps `realOutputShipping` and `costAndLatencyOnJudgeTask` at L2.
+- `NOT_MAAS` — no agent/LLM evidence at all, not even in marketing copy. Hard-caps both at L1.
+
+`managementUIUsability` is explicitly NOT affected by the triage — a polished non-agent SaaS can still score L4-L5 on UX.
+
+Evidence strings from the Product Inspector now sometimes carry a `[NOT_MAAS]` or `[REAL_MAAS]` prefix — this is intentional, it's not a bug.
+
+This is a prompt-level change only; no code enforces the caps. The LLM is trusted to respect them.
 
 ### CLI contract
 
@@ -189,7 +287,9 @@ The Pitch Writer is told: `NOMINATE` requires `total >= 82` (≥50%) AND `realOu
 
 All three agents use `claude-sonnet-4-5-20250929` via the `@anthropic-ai/sdk` messages API. Per-agent `max_tokens`: Inspector 1024, Auditor 1024, Pitch 1536. Do not change model without being asked.
 
-### Output shape (locked — do not change)
+### Output shape (locked — do not change without updating the UI)
+
+The CLI (`judge.js`) still emits the original 6-field shape. The API route (`/api/score`) additionally returns `inputs` and `traceUrl`:
 
 ```json
 {
@@ -206,8 +306,20 @@ All three agents use `claude-sonnet-4-5-20250929` via the `@anthropic-ai/sdk` me
   "maxTotal": 164,
   "verdict": "NOMINATE",
   "pitch": "...",
-  "reasoning": "..."
+  "reasoning": "...",
+  "inputs": { "url": "https://...", "repo": "https://github.com/..." | null },
+  "traceUrl": "https://cloud.langfuse.com/trace/..."
 }
 ```
 
-The Iteration 2 Next.js UI must consume exactly this shape.
+`app/page.tsx` types `traceUrl` as optional (`traceUrl?: string`) because the local `SAMPLE` constant doesn't carry one — anything coming from `/api/score` in production always has it.
+
+### Demo-day checklist (2:05 PM)
+
+Before starting Iteration 4, verify on a **fresh browser tab, no cookies**:
+1. https://clawstand.vercel.app loads and shows the self-score sample under "Here's ClawStand scoring itself."
+2. Typing a URL and clicking "Score it" runs through all 4 loading phases, lands on a real result, and the `TRACED VIA LANGFUSE ↗` link appears under the pitch card.
+3. That link opens a Langfuse trace with 3 child spans (productInspector, repoAuditor, pitchWriter), each with visible input/output.
+4. The CLI still works: `node judge.js --url https://example.com` prints JSON to stdout.
+
+If any of those four are broken, fix before starting I4.
