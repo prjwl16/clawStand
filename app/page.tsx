@@ -5,7 +5,13 @@ import Link from "next/link";
 import { ArrowRight, ArrowUpRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { RUBRIC_ORDER, RUBRIC_LABELS, levelNumber } from "@/lib/rubric-meta";
+import {
+  TRACK_META,
+  TrackId,
+  getTrackMeta,
+  levelNumber,
+  type RubricLabel,
+} from "@/lib/rubric-meta";
 
 type ScoreCell = { level: string; evidence: string };
 
@@ -17,6 +23,7 @@ type ScoreResult = {
   pitch: string;
   reasoning: string;
   inputs: { url: string; repo: string | null };
+  track?: TrackId;
   traceUrl?: string;
 };
 
@@ -25,6 +32,7 @@ type ScoreResult = {
  * total = (3-1)*20 + (4-1)*5 + (2-1)*7 + (1-1)*5 + (2-1)*2 + (3-1)*1 + (3-1)*1 = 68
  */
 const SAMPLE: ScoreResult = {
+  track: "maas" as const,
   scores: {
     realOutputShipping: {
       level: "L3",
@@ -85,6 +93,16 @@ const PHASES = [
 export default function Page() {
   const [url, setUrl] = useState("");
   const [repo, setRepo] = useState("");
+  const [track, setTrack] = useState<TrackId>("maas");
+  const [stats, setStats] = useState({
+    impressions: "",
+    reactions: "",
+    visitors: "",
+    signups: "",
+    amplification: "",
+    revenueUSD: "",
+    waitlist: "",
+  });
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<ScoreResult | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -131,6 +149,42 @@ export default function Page() {
         body: JSON.stringify({
           url: url.trim(),
           repo: repo.trim() || undefined,
+          track,
+          stats:
+            track === "maas"
+              ? undefined
+              : {
+                  ...(track === "virality"
+                    ? {
+                        impressions: stats.impressions
+                          ? Number(stats.impressions)
+                          : undefined,
+                        reactions: stats.reactions
+                          ? Number(stats.reactions)
+                          : undefined,
+                        visitors: stats.visitors
+                          ? Number(stats.visitors)
+                          : undefined,
+                        signups: stats.signups
+                          ? Number(stats.signups)
+                          : undefined,
+                        amplification: stats.amplification || undefined,
+                      }
+                    : {}),
+                  ...(track === "revenue"
+                    ? {
+                        signups: stats.signups
+                          ? Number(stats.signups)
+                          : undefined,
+                        revenueUSD: stats.revenueUSD
+                          ? Number(stats.revenueUSD)
+                          : undefined,
+                        waitlist: stats.waitlist
+                          ? Number(stats.waitlist)
+                          : undefined,
+                      }
+                    : {}),
+                },
         }),
       });
       const data = await res.json();
@@ -152,7 +206,7 @@ export default function Page() {
     <main className="min-h-screen">
       <Header />
 
-      <div className="mx-auto max-w-5xl px-6 sm:px-10 pt-14 pb-20">
+      <div className="mx-auto max-w-6xl px-6 sm:px-10 pt-14 pb-20">
         {/* Tagline -------------------------------------------------- */}
         <section>
           <h1 className="text-5xl sm:text-6xl lg:text-7xl font-bold tracking-tight leading-[0.98] text-fg">
@@ -161,13 +215,42 @@ export default function Page() {
             for hackathon submissions.
           </h1>
           <p className="mt-5 text-base sm:text-lg text-sub max-w-xl leading-relaxed">
-            Scores against the GrowthX MaaS rubric. Writes the pitch-down
-            verdict.
+            Scores against the GrowthX Virality, Revenue, and MaaS rubrics.
+            Writes the pitch-down verdict.
           </p>
         </section>
 
         {/* Input form ---------------------------------------------- */}
         <form onSubmit={submit} className="mt-10 space-y-5">
+          {/* Track selector --------------------------------------- */}
+          <div className="space-y-2">
+            <label className="block text-sm font-medium text-fg">Track</label>
+            <div className="flex gap-2">
+              {(["maas", "virality", "revenue"] as TrackId[]).map((t) => {
+                const active = track === t;
+                return (
+                  <button
+                    key={t}
+                    type="button"
+                    disabled={loading}
+                    onClick={() => setTrack(t)}
+                    className={
+                      "flex-1 h-11 rounded-md border text-sm font-mono uppercase tracking-wider transition-colors " +
+                      (active
+                        ? "bg-acid border-acid text-black font-semibold"
+                        : "border-line text-muted hover:text-fg hover:border-fg/30")
+                    }
+                  >
+                    {TRACK_META[t].label}
+                  </button>
+                );
+              })}
+            </div>
+            <p className="text-xs text-muted font-mono">
+              {TRACK_META[track].tag}
+            </p>
+          </div>
+
           <div className="space-y-2">
             <label className="block text-sm font-medium text-fg">
               Live URL <span className="text-acid">*</span>
@@ -194,6 +277,157 @@ export default function Page() {
               placeholder="https://github.com/team/repo"
             />
           </div>
+
+          {/* Track-specific stats --------------------------------- */}
+          {track === "virality" && (
+            <div className="space-y-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <label className="block text-sm font-medium text-fg">
+                    Impressions
+                  </label>
+                  <p className="text-xs text-muted">
+                    Total impressions (all platforms, organic + ads×0.25)
+                  </p>
+                  <Input
+                    type="number"
+                    inputMode="numeric"
+                    value={stats.impressions}
+                    disabled={loading}
+                    onChange={(e) =>
+                      setStats({ ...stats, impressions: e.target.value })
+                    }
+                    placeholder="0"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <label className="block text-sm font-medium text-fg">
+                    Reactions & comments
+                  </label>
+                  <p className="text-xs text-muted">
+                    Reactions & comments (aggregated)
+                  </p>
+                  <Input
+                    type="number"
+                    inputMode="numeric"
+                    value={stats.reactions}
+                    disabled={loading}
+                    onChange={(e) =>
+                      setStats({ ...stats, reactions: e.target.value })
+                    }
+                    placeholder="0"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <label className="block text-sm font-medium text-fg">
+                    Visitors
+                  </label>
+                  <p className="text-xs text-muted">
+                    Unique visitors to product
+                  </p>
+                  <Input
+                    type="number"
+                    inputMode="numeric"
+                    value={stats.visitors}
+                    disabled={loading}
+                    onChange={(e) =>
+                      setStats({ ...stats, visitors: e.target.value })
+                    }
+                    placeholder="0"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <label className="block text-sm font-medium text-fg">
+                    Signups
+                  </label>
+                  <p className="text-xs text-muted">
+                    Signups / meaningful actions
+                  </p>
+                  <Input
+                    type="number"
+                    inputMode="numeric"
+                    value={stats.signups}
+                    disabled={loading}
+                    onChange={(e) =>
+                      setStats({ ...stats, signups: e.target.value })
+                    }
+                    placeholder="0"
+                  />
+                </div>
+              </div>
+              <div className="space-y-2">
+                <label className="block text-sm font-medium text-fg">
+                  Amplification
+                </label>
+                <p className="text-xs text-muted">
+                  Amplification notes (who reshared, any notable accounts)
+                </p>
+                <Input
+                  value={stats.amplification}
+                  disabled={loading}
+                  onChange={(e) =>
+                    setStats({ ...stats, amplification: e.target.value })
+                  }
+                  placeholder="@founder_x reshared; picked up by TechCrunch..."
+                />
+              </div>
+            </div>
+          )}
+
+          {track === "revenue" && (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <label className="block text-sm font-medium text-fg">
+                  Signups
+                </label>
+                <p className="text-xs text-muted">Signups</p>
+                <Input
+                  type="number"
+                  inputMode="numeric"
+                  value={stats.signups}
+                  disabled={loading}
+                  onChange={(e) =>
+                    setStats({ ...stats, signups: e.target.value })
+                  }
+                  placeholder="0"
+                />
+              </div>
+              <div className="space-y-2">
+                <label className="block text-sm font-medium text-fg">
+                  Revenue (USD)
+                </label>
+                <p className="text-xs text-muted">
+                  Revenue generated (USD, product only)
+                </p>
+                <Input
+                  type="number"
+                  inputMode="numeric"
+                  value={stats.revenueUSD}
+                  disabled={loading}
+                  onChange={(e) =>
+                    setStats({ ...stats, revenueUSD: e.target.value })
+                  }
+                  placeholder="0"
+                />
+              </div>
+              <div className="space-y-2">
+                <label className="block text-sm font-medium text-fg">
+                  Waitlist
+                </label>
+                <p className="text-xs text-muted">Waitlist emails</p>
+                <Input
+                  type="number"
+                  inputMode="numeric"
+                  value={stats.waitlist}
+                  disabled={loading}
+                  onChange={(e) =>
+                    setStats({ ...stats, waitlist: e.target.value })
+                  }
+                  placeholder="0"
+                />
+              </div>
+            </div>
+          )}
 
           <div className="pt-1">
             <Button
@@ -252,7 +486,7 @@ export default function Page() {
 function Header() {
   return (
     <header className="border-b border-line">
-      <div className="mx-auto max-w-5xl px-6 sm:px-10 h-12 flex items-center justify-between">
+      <div className="mx-auto max-w-6xl px-6 sm:px-10 h-12 flex items-center justify-between">
         <div className="flex items-center gap-2">
           <span className="inline-block h-1.5 w-1.5 rounded-full bg-acid" />
           <span className="text-sm font-semibold tracking-tight text-fg">
@@ -273,10 +507,6 @@ function Header() {
           >
             Admin
           </Link>
-          <span className="hidden sm:inline text-line">·</span>
-          <span className="hidden sm:inline text-xs text-sub">
-            MaaS rubric <span className="text-line">·</span> 164 max
-          </span>
         </nav>
       </div>
     </header>
@@ -308,6 +538,7 @@ function LoadingBar({ phase, elapsed }: { phase: number; elapsed: number }) {
 
 function ResultView({ data }: { data: ScoreResult }) {
   const isNom = data.verdict === "NOMINATE";
+  const meta = getTrackMeta(data.track);
 
   return (
     <div className="space-y-10">
@@ -334,17 +565,18 @@ function ResultView({ data }: { data: ScoreResult }) {
           </span>
         </div>
         <div className="text-xs uppercase tracking-[0.18em] font-medium text-muted">
-          Total score
+          Total score · {meta.label}
         </div>
       </div>
 
       {/* Rubric table --------------------------------------------- */}
       <div className="border-t border-line">
-        {RUBRIC_ORDER.map((key) => (
+        {meta.order.map((key) => (
           <RubricRow
             key={key}
             rubricKey={key}
             score={data.scores[key]}
+            labels={meta.labels}
           />
         ))}
       </div>
@@ -389,38 +621,36 @@ function ResultView({ data }: { data: ScoreResult }) {
 function RubricRow({
   rubricKey,
   score,
+  labels,
 }: {
   rubricKey: string;
   score: ScoreCell | undefined;
+  labels: Record<string, RubricLabel>;
 }) {
-  const meta = RUBRIC_LABELS[rubricKey];
+  const meta = labels[rubricKey];
   const L = levelNumber(score?.level);
   const evidence = score?.evidence || "—";
 
   return (
-    <div className="grid grid-cols-1 md:grid-cols-12 gap-3 md:gap-6 py-4 border-b border-line">
-      {/* Parameter + weight */}
-      <div className="md:col-span-4 flex items-start gap-3">
+    <div className="flex flex-col md:flex-row md:items-start md:gap-6 py-4 border-b border-line">
+      {/* Weight + title — fixed-width block on desktop */}
+      <div className="flex items-start gap-3 md:w-64 shrink-0">
         <span className="text-xs font-mono text-muted tabular-nums pt-[3px] w-8 shrink-0">
-          ×{meta.weight}
+          ×{meta?.weight ?? "?"}
         </span>
         <span className="text-[15px] font-medium text-fg leading-snug">
-          {meta.title}
+          {meta?.title ?? rubricKey}
         </span>
       </div>
 
-      {/* Level pills */}
-      <div className="md:col-span-3">
-        <div className="flex items-center gap-1">
+      {/* Pills + evidence grouped with tight inner gap — no wasted space between them */}
+      <div className="flex flex-col md:flex-row md:items-start md:gap-3 gap-2 flex-1 min-w-0">
+        <div className="flex items-center gap-1 shrink-0">
           {[1, 2, 3, 4, 5].map((n) => (
             <LevelPill key={n} n={n} selected={n === L} />
           ))}
         </div>
-      </div>
-
-      {/* Evidence */}
-      <div className="md:col-span-5">
-        <p className="text-[13px] text-sub font-mono leading-relaxed">
+        <p className="flex-1 text-[13px] text-sub font-mono leading-relaxed min-w-0">
           {evidence}
         </p>
       </div>
